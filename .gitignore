@@ -1,1 +1,24 @@
-node_modules
+# Expo
+.expo/*
+dist/
+web-build/
+
+# Dependencies
+node_modules/
+
+# Android
+android/build/
+android/app/build/
+*.skls
+
+# Binary files (Keystores 등 보안 파일)
+*.keystore
+!debug.keystore
+
+# Temporary/Cache files
+.eslintcache
+*.log
+_backup/
+
+# Environment variables
+.env*
