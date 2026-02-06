@@ -1,0 +1,24 @@
+﻿{
+    "expo":  {
+                 "name":  "RiderNote",
+                 "slug":  "ridernote",
+                 "version":  "1.0.0",
+                 "platforms":  [
+                                   "android"
+                               ],
+                 "android":  {
+                                 "package":  "com.ridernote",
+                                 "config":  {
+                                                "googleMaps":  {
+                                                                   "apiKey":  "여기에_키_붙여넣기"
+                                                               }
+                                            }
+                             },
+                 "plugins":  [
+                                 "./plugins/withRiderTracker"
+                             ],
+                 "extra":  {
+                               "kakaoJavaScriptKey":  ""
+                           }
+             }
+}

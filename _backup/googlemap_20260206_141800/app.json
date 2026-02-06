@@ -1,0 +1,19 @@
+﻿{
+    "expo":  {
+                 "name":  "RiderMemoTracker",
+                 "slug":  "ridermemotracker",
+                 "version":  "1.0.0",
+                 "platforms":  [
+                                   "android"
+                               ],
+                 "android":  {
+                                 "package":  "com.ridermemotracker"
+                             },
+                 "plugins":  [
+                                 "./plugins/withRiderTracker"
+                             ],
+                 "extra":  {
+                               "kakaoJavaScriptKey":  ""
+                           }
+             }
+}

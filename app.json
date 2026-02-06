@@ -1,0 +1,47 @@
+﻿{
+  "expo": {
+    "name": "RiderNote",
+    "slug": "ridernote",
+    "version": "1.0.0",
+    "platforms": [
+      "android"
+    ],
+    "icon": "./assets/icon.png",
+    "splash": {
+      "image": "./assets/splash.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#ffffff"
+    },
+    "android": {
+      "package": "com.ridernote",
+      "versionCode": 4,
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#ffffff"
+      },
+      "config": {
+        "googleMaps": {
+          "apiKey": "AIzaSyC2nZjkOauvpYqIaIAnpUDZPlEr7xir_jk"
+        }
+      }
+    },
+    "plugins": [
+      "./plugins/withRiderTracker",
+      "./withAndroidSigning.js"
+    ],
+    "updates": {
+      "enabled": true,
+      "checkAutomatically": "ON_LOAD",
+      "fallbackToCacheTimeout": 0,
+      "url": "https://u.expo.dev/db131583-e799-4791-aaba-95974d89f15d"
+    },
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
+    "extra": {
+      "eas": {
+        "projectId": "db131583-e799-4791-aaba-95974d89f15d"
+      }
+    }
+  }
+}
