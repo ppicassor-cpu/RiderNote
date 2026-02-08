@@ -2,7 +2,8 @@
 .expo/*
 dist/
 web-build/
-
+# Kotlin Symbol Processing (KSP) Caches
+**/build/kspCaches/
 # Dependencies
 node_modules/
 

@@ -1,5 +1,7 @@
-﻿import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AppState, Dimensions, ScrollView, StyleProp, StyleSheet, Text, View, ViewStyle } from "react-native";
+﻿// FILE: C:\RiderNote\src\components\GoogleMap.tsx
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { AppState, Dimensions, ScrollView, StyleProp, StyleSheet, Text, TextInput, TouchableOpacity, View, ViewStyle } from "react-native";
+import { Ionicons } from "@expo/vector-icons";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import MapView, { Marker, Polyline, PROVIDER_GOOGLE } from "react-native-maps";
 import type { LatLng, Region } from "react-native-maps";
@@ -25,12 +27,16 @@ type Props = {
   memoPins?: MemoPin[];
 
   onPressMemoPin?: (pin: MemoPin) => void;
+  onDeleteMemoPin?: (pin: MemoPin) => void | Promise<void>;
+  onUpdateMemoPin?: (pin: MemoPin, nextText: string) => void | Promise<void>;
 
   showCenterMarker?: boolean;
 
   autoFit?: boolean;
 
   fitSessionId?: string | null;
+
+  customMapStyle?: any;
 };
 
 function fmtTime(ms?: number) {
@@ -74,15 +80,20 @@ export default function GoogleMap({
   memoPins,
   showCenterMarker,
   autoFit,
-  fitSessionId
+  fitSessionId,
+  customMapStyle,
+  onDeleteMemoPin,
+  onUpdateMemoPin
 }: Props) {
   const mapRef = useRef<any>(null);
   const userInteractedRef = useRef<boolean>(false);
 
-  const [mapReady, setMapReady] = useState<boolean>(false);
+ const [mapReady, setMapReady] = useState<boolean>(false);
   const [selectedPin, setSelectedPin] = useState<MemoPin | null>(null);
   const [bubblePos, setBubblePos] = useState<BubblePos | null>(null);
-
+  const [deleteConfirmVisible, setDeleteConfirmVisible] = useState<boolean>(false);
+  const [editVisible, setEditVisible] = useState<boolean>(false);
+  const [editText, setEditText] = useState<string>("");
   const [delta, setDelta] = useState<{ latitudeDelta: number; longitudeDelta: number }>({
     latitudeDelta: DEFAULT_DELTA,
     longitudeDelta: DEFAULT_DELTA
@@ -97,6 +108,16 @@ export default function GoogleMap({
 
   const autoCenterDoneRef = useRef<boolean>(false);
   const appStateRef = useRef<string>(AppState.currentState);
+
+  const [followMyLocation, setFollowMyLocation] = useState<boolean>(false);
+  const followMyLocationRef = useRef<boolean>(false);
+  const lastUserCoordRef = useRef<{ lat: number; lng: number; acc?: number } | null>(null);
+  const lastFollowAnimAtRef = useRef<number>(0);
+  const lastFollowCoordRef = useRef<{ lat: number; lng: number } | null>(null);
+
+  useEffect(() => {
+    followMyLocationRef.current = followMyLocation;
+  }, [followMyLocation]);
 
   useEffect(() => {
     const sub = AppState.addEventListener("change", (next) => {
@@ -180,6 +201,7 @@ export default function GoogleMap({
     if (!enabled) return;
     if (!mapReady) return;
     if (userInteractedRef.current) return;
+    if (followMyLocationRef.current) return;
 
     const targets: LatLng[] = [];
     if (routeCoords.length >= 2) targets.push(...routeCoords);
@@ -218,6 +240,32 @@ export default function GoogleMap({
     [mapReady]
   );
 
+  const animateToUser = useCallback((lat: number, lng: number, ms: number) => {
+    try {
+      mapRef.current?.animateToRegion?.(
+        {
+          latitude: lat,
+          longitude: lng,
+          latitudeDelta: deltaRef.current.latitudeDelta,
+          longitudeDelta: deltaRef.current.longitudeDelta
+        },
+        ms
+      );
+    } catch {}
+  }, []);
+
+  const handlePressMyLocation = useCallback(() => {
+    userInteractedRef.current = false;
+    setFollowMyLocation(true);
+
+    const last = lastUserCoordRef.current;
+    if (last && isValidLatLng(last.lat, last.lng)) {
+      lastFollowCoordRef.current = { lat: last.lat, lng: last.lng };
+      lastFollowAnimAtRef.current = Date.now();
+      animateToUser(last.lat, last.lng, 450);
+    }
+  }, [animateToUser]);
+
   useEffect(() => {
     if (!mapReady) return;
     if (!loadedDeltaRef.current) return;
@@ -241,6 +289,7 @@ export default function GoogleMap({
   useEffect(() => {
     if (!mapReady) return;
     if (userInteractedRef.current) return;
+    if (followMyLocationRef.current) return;
 
     const enabled = typeof autoFit === "boolean" ? autoFit : true;
     const hasTargets = routeCoords.length >= 2 || fitPins.length > 0;
@@ -276,11 +325,17 @@ export default function GoogleMap({
   const closeBubble = useCallback(() => {
     setSelectedPin(null);
     setBubblePos(null);
+    setDeleteConfirmVisible(false);
+    setEditVisible(false);
+    setEditText("");
   }, []);
 
   const handlePressPin = useCallback(
     (pin: MemoPin) => {
       setSelectedPin(pin);
+      setDeleteConfirmVisible(false);
+      setEditVisible(false);
+      setEditText((pin?.text ?? "").toString());
       updateBubblePosition(pin);
     },
     [updateBubblePosition]
@@ -306,14 +361,11 @@ export default function GoogleMap({
         style={styles.map}
         initialRegion={initialRegion}
         showsUserLocation
-        showsMyLocationButton
+        showsMyLocationButton={false}
         onMapReady={() => setMapReady(true)}
         onPress={closeBubble}
+        customMapStyle={customMapStyle}
         onUserLocationChange={(e: any) => {
-          if (!mapReady) return;
-          if (userInteractedRef.current) return;
-          if (autoCenterDoneRef.current) return;
-
           const coord = e?.nativeEvent?.coordinate;
           const lat = Number(coord?.latitude);
           const lng = Number(coord?.longitude);
@@ -321,6 +373,30 @@ export default function GoogleMap({
 
           if (!isValidLatLng(lat, lng)) return;
           if (Number.isFinite(acc) && acc > 2000) return;
+
+          lastUserCoordRef.current = { lat, lng, acc };
+
+          if (!mapReady) return;
+
+          if (followMyLocationRef.current) {
+            const now = Date.now();
+            if (now - lastFollowAnimAtRef.current < 650) return;
+
+            const prev = lastFollowCoordRef.current;
+            if (prev) {
+              const dLat = Math.abs(prev.lat - lat);
+              const dLng = Math.abs(prev.lng - lng);
+              if (dLat < 0.00002 && dLng < 0.00002) return;
+            }
+
+            lastFollowAnimAtRef.current = now;
+            lastFollowCoordRef.current = { lat, lng };
+            animateToUser(lat, lng, 450);
+            return;
+          }
+
+          if (userInteractedRef.current) return;
+          if (autoCenterDoneRef.current) return;
 
           autoCenterDoneRef.current = true;
 
@@ -338,6 +414,7 @@ export default function GoogleMap({
         }}
         onPanDrag={() => {
           userInteractedRef.current = true;
+          if (followMyLocationRef.current) setFollowMyLocation(false);
         }}
         onRegionChangeComplete={(region: Region, details?: any) => {
           const latD = clamp(region.latitudeDelta, 0.0005, 5);
@@ -352,6 +429,10 @@ export default function GoogleMap({
 
           if (details?.isGesture) userInteractedRef.current = true;
 
+          if (details?.isGesture && followMyLocationRef.current) {
+            setFollowMyLocation(false);
+          }
+
           if (details?.isGesture) {
             if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
             saveTimerRef.current = setTimeout(() => {
@@ -362,7 +443,13 @@ export default function GoogleMap({
           if (selectedPin) updateBubblePosition(selectedPin);
         }}
       >
-        {routeCoords.length >= 2 && <Polyline coordinates={routeCoords} strokeWidth={4} />}
+        {routeCoords.length >= 2 && (
+          <Polyline
+            coordinates={routeCoords}
+            strokeWidth={3}
+            strokeColor="rgba(123, 228, 241, 0.85)"
+          />
+       )}
 
         {pins.map((pin) => (
           <Marker key={pin.id} coordinate={{ latitude: pin.lat, longitude: pin.lng }} onPress={() => handlePressPin(pin)} />
@@ -370,6 +457,10 @@ export default function GoogleMap({
 
         {shouldShowCenterMarker && <Marker coordinate={{ latitude: center.lat, longitude: center.lng }} />}
       </MapView>
+
+      <TouchableOpacity activeOpacity={0.88} onPress={handlePressMyLocation} style={styles.myLocBtn}>
+        <Ionicons name="locate" size={18} color="rgba(29,44,59,0.88)" />
+      </TouchableOpacity>
 
       {!!selectedPin && !!bubblePos && (
         <View pointerEvents="box-none" style={StyleSheet.absoluteFill}>
@@ -381,15 +472,110 @@ export default function GoogleMap({
               {bubblePos.placement === "below" && <View style={[styles.arrowUp]} />}
 
               <View style={[styles.bubbleBox, { maxHeight: bubbleScrollMax }]}>
+                <TouchableOpacity
+                  activeOpacity={0.85}
+                  onPress={() => {
+                    setDeleteConfirmVisible(false);
+                    setEditVisible(v => {
+                      const next = !v;
+                      if (next) setEditText((selectedPin?.text ?? "").toString());
+                      return next;
+                    });
+                  }}
+                  style={styles.bubbleEditBtn}
+                >
+                  <Ionicons name="create-outline" size={18} color="rgba(29,44,59,0.75)" />
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  activeOpacity={0.85}
+                  onPress={() => {
+                    setEditVisible(false);
+                    setDeleteConfirmVisible(v => !v);
+                  }}
+                  style={styles.bubbleTrashBtn}
+                >
+                  <Ionicons name="trash-outline" size={18} color="rgba(29,44,59,0.75)" />
+                </TouchableOpacity>
+
                 {!!bubbleTime && <Text style={styles.bubbleTime}>{bubbleTime}</Text>}
 
-                <ScrollView
-                  style={styles.bubbleScroll}
-                  contentContainerStyle={styles.bubbleScrollContent}
-                  showsVerticalScrollIndicator
-                >
-                  <Text style={styles.bubbleText}>{bubbleText.trim() || "(텍스트 없음)"}</Text>
-                </ScrollView>
+                {editVisible ? (
+                  <TextInput
+                    value={editText}
+                    onChangeText={setEditText}
+                    multiline
+                    scrollEnabled
+                    textAlignVertical="top"
+                    placeholder="(텍스트 없음)"
+                    placeholderTextColor="rgba(29,44,59,0.40)"
+                    style={[styles.bubbleEditInput, { maxHeight: bubbleScrollMax - 84 }]}
+                  />
+                ) : (
+                  <ScrollView
+                    style={styles.bubbleScroll}
+                    contentContainerStyle={styles.bubbleScrollContent}
+                    showsVerticalScrollIndicator
+                  >
+                    <Text style={styles.bubbleText}>{bubbleText.trim() || "(텍스트 없음)"}</Text>
+                  </ScrollView>
+                )}
+
+                {editVisible ? (
+                  <View style={styles.bubbleConfirmRow}>
+                    <TouchableOpacity
+                      activeOpacity={0.85}
+                      onPress={() => {
+                        setEditVisible(false);
+                        setEditText((selectedPin?.text ?? "").toString());
+                      }}
+                      style={[styles.bubbleConfirmBtn, styles.bubbleConfirmBtnCancel]}
+                    >
+                      <Text style={[styles.bubbleConfirmText, styles.bubbleConfirmTextCancel]}>취소</Text>
+                    </TouchableOpacity>
+
+                    <TouchableOpacity
+                      activeOpacity={0.85}
+                      onPress={async () => {
+                        const next = (editText ?? "").toString();
+                        try {
+                          if (selectedPin && onUpdateMemoPin) await onUpdateMemoPin(selectedPin, next);
+                          setSelectedPin(p => (p ? { ...p, text: next } : p));
+                          setEditVisible(false);
+                        } catch {}
+                      }}
+                      style={[styles.bubbleConfirmBtn, styles.bubbleConfirmBtnOk]}
+                    >
+                      <Text style={[styles.bubbleConfirmText, styles.bubbleConfirmTextOk]}>저장</Text>
+                    </TouchableOpacity>
+                  </View>
+                ) : (
+                  deleteConfirmVisible && (
+                    <View style={styles.bubbleConfirmRow}>
+                      <TouchableOpacity
+                        activeOpacity={0.85}
+                        onPress={() => setDeleteConfirmVisible(false)}
+                        style={[styles.bubbleConfirmBtn, styles.bubbleConfirmBtnCancel]}
+                      >
+                        <Text style={[styles.bubbleConfirmText, styles.bubbleConfirmTextCancel]}>취소</Text>
+                      </TouchableOpacity>
+
+                      <TouchableOpacity
+                        activeOpacity={0.85}
+                        onPress={async () => {
+                          try {
+                            if (selectedPin && onDeleteMemoPin) await onDeleteMemoPin(selectedPin);
+                          } finally {
+                            closeBubble();
+                          }
+                        }}
+                        style={[styles.bubbleConfirmBtn, styles.bubbleConfirmBtnOk]}
+                      >
+                        <Text style={[styles.bubbleConfirmText, styles.bubbleConfirmTextOk]}>확인</Text>
+                      </TouchableOpacity>
+                    </View>
+                  )
+                )}
               </View>
 
               {bubblePos.placement === "above" && <View style={[styles.arrowDown]} />}
@@ -404,6 +590,20 @@ export default function GoogleMap({
 const styles = StyleSheet.create({
   root: { flex: 1 },
   map: { ...StyleSheet.absoluteFillObject },
+
+  myLocBtn: {
+    position: "absolute",
+    right: 14,
+    top: 14,
+    width: 42,
+    height: 42,
+    borderRadius: 14,
+    backgroundColor: "#FFFFFF",
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderColor: "rgba(29,44,59,0.12)"
+  },
 
   bubbleAnchor: {
     position: "absolute"
@@ -447,6 +647,66 @@ const styles = StyleSheet.create({
     fontWeight: "800",
     color: "rgba(29,44,59,0.90)",
     lineHeight: 17
+  },
+
+  bubbleEditBtn: {
+    position: "absolute",
+    right: 44,
+    top: 8,
+    width: 30,
+    height: 30,
+    borderRadius: 10,
+    alignItems: "center",
+    justifyContent: "center"
+  },
+  bubbleTrashBtn: {
+    position: "absolute",
+    right: 10,
+    top: 8,
+    width: 30,
+    height: 30,
+    borderRadius: 10,
+    alignItems: "center",
+    justifyContent: "center"
+  },
+  bubbleEditInput: {
+    fontSize: 12,
+    fontWeight: "800",
+    color: "rgba(29,44,59,0.90)",
+    lineHeight: 17,
+    padding: 0
+  },
+  bubbleConfirmRow: {
+    marginTop: 10,
+    flexDirection: "row",
+    justifyContent: "flex-end",
+    gap: 8
+  },
+  bubbleConfirmBtn: {
+    height: 30,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1
+  },
+  bubbleConfirmBtnCancel: {
+    backgroundColor: "rgba(29,44,59,0.05)",
+    borderColor: "rgba(29,44,59,0.18)"
+  },
+  bubbleConfirmBtnOk: {
+    backgroundColor: "rgba(29,44,59,0.92)",
+    borderColor: "rgba(29,44,59,0.92)"
+  },
+  bubbleConfirmText: {
+    fontSize: 11,
+    fontWeight: "900"
+  },
+  bubbleConfirmTextCancel: {
+    color: "rgba(29,44,59,0.80)"
+  },
+  bubbleConfirmTextOk: {
+    color: "#FFFFFF"
   },
 
   arrowDown: {

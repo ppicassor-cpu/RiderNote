@@ -31,8 +31,13 @@
         <action android:name="android.intent.action.MAIN"/>
         <category android:name="android.intent.category.LAUNCHER"/>
       </intent-filter>
+      <intent-filter>
+        <action android:name="android.intent.action.VIEW"/>
+        <category android:name="android.intent.category.DEFAULT"/>
+        <category android:name="android.intent.category.BROWSABLE"/>
+        <data android:scheme="ridernote"/>
+      </intent-filter>
     </activity>
-    <activity android:name="com.ridernote.tracker.ClipboardCaptureActivity" android:exported="false" android:excludeFromRecents="true" android:noHistory="true" android:finishOnTaskLaunch="true" android:theme="@android:style/Theme.Translucent.NoTitleBar"/>
     <uses-library android:name="org.apache.http.legacy" android:required="false"/>
   </application>
 </manifest>

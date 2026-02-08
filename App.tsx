@@ -1,4 +1,4 @@
-﻿// FILE: C:\RiderNote\App.tsx 
+﻿// FILE: C:\RiderNote\App.tsx
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import {
@@ -10,14 +10,28 @@ import {
   StatusBar,
   StyleSheet,
   Text,
+  TextInput,
   TouchableOpacity,
   View
 } from "react-native";
+
+const TextAny: any = Text;
+TextAny.defaultProps = TextAny.defaultProps || {};
+TextAny.defaultProps.allowFontScaling = false;
+TextAny.defaultProps.maxFontSizeMultiplier = 1;
+
+const TextInputAny: any = TextInput;
+TextInputAny.defaultProps = TextInputAny.defaultProps || {};
+TextInputAny.defaultProps.allowFontScaling = false;
+TextInputAny.defaultProps.maxFontSizeMultiplier = 1;
+import { Ionicons } from "@expo/vector-icons";
 import { SafeAreaProvider, SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import * as Updates from "expo-updates";
 import GoogleMap, { MemoPin, RoutePoint } from "./src/components/GoogleMap";
 import Tracker, { MemoItem, ManualLocationState } from "./src/native/NativeTracker";
 import MemoHistoryScreen from "./src/screens/MemoHistoryScreen";
+import ProfileScreen from "./src/screens/ProfileScreen";
+import { ThemeProvider, useAppTheme, Theme as AppTheme } from "./src/theme/ThemeProvider";
 
 // ------------------------------------------------------------------
 // 1. Types & Utilities
@@ -83,12 +97,16 @@ function numOrNull(x: any): number | null {
 // 2. Sub-Components
 // ------------------------------------------------------------------
 
+type AppStyles = ReturnType<typeof createStyles>;
+
 const AlertPopup = ({
   state,
-  onClose
+  onClose,
+  styles
 }: {
   state: PopupState;
   onClose: () => void;
+  styles: AppStyles;
 }) => {
   return (
     <View pointerEvents={state.visible ? "auto" : "none"} style={[StyleSheet.absoluteFill, { zIndex: state.visible ? 40000 : -1 }]}>
@@ -104,7 +122,11 @@ const AlertPopup = ({
                   activeOpacity={0.88}
                   style={[styles.popupBtn, b.variant === "secondary" ? styles.popupBtnSecondary : styles.popupBtnPrimary]}
                   onPress={async () => {
-                    try { await b.onPress?.(); } finally { onClose(); }
+                    try {
+                      await b.onPress?.();
+                    } finally {
+                      onClose();
+                    }
                   }}
                 >
                   <Text style={[styles.popupBtnText, b.variant === "secondary" ? styles.popupBtnTextSecondary : styles.popupBtnTextPrimary]}>
@@ -122,10 +144,12 @@ const AlertPopup = ({
 
 const PermissionGate = ({
   perm,
-  onFix
+  onFix,
+  styles
 }: {
   perm: PermState;
   onFix: () => void;
+  styles: AppStyles;
 }) => {
   return (
     <View style={styles.gateRoot} pointerEvents="auto">
@@ -135,33 +159,25 @@ const PermissionGate = ({
 
         <View style={styles.gateRow}>
           <Text style={styles.gateLabel}>📍 위치(포그라운드)</Text>
-          <Text style={[styles.gateValue, perm.locationFg ? styles.ok : styles.bad]}>
-            {perm.locationFg ? "허용됨" : "필수"}
-          </Text>
+          <Text style={[styles.gateValue, perm.locationFg ? styles.ok : styles.bad]}>{perm.locationFg ? "허용됨" : "필수"}</Text>
         </View>
 
         {Number(Platform.Version) >= 29 && (
           <View style={styles.gateRow}>
             <Text style={styles.gateLabel}>🌙 위치(백그라운드)</Text>
-            <Text style={[styles.gateValue, perm.locationBg ? styles.ok : styles.bad]}>
-              {perm.locationBg ? "허용됨" : "필수"}
-            </Text>
+            <Text style={[styles.gateValue, perm.locationBg ? styles.ok : styles.bad]}>{perm.locationBg ? "허용됨" : "필수"}</Text>
           </View>
         )}
 
         <View style={styles.gateRow}>
           <Text style={styles.gateLabel}>🧷 다른 앱 위에 표시</Text>
-          <Text style={[styles.gateValue, perm.overlay ? styles.ok : styles.bad]}>
-            {perm.overlay ? "허용됨" : "필수"}
-          </Text>
+          <Text style={[styles.gateValue, perm.overlay ? styles.ok : styles.bad]}>{perm.overlay ? "허용됨" : "필수"}</Text>
         </View>
 
         {Number(Platform.Version) >= 33 && (
           <View style={styles.gateRow}>
             <Text style={styles.gateLabel}>🔔 알림</Text>
-            <Text style={[styles.gateValue, perm.notifications ? styles.ok : styles.bad]}>
-              {perm.notifications ? "허용됨" : "필수"}
-            </Text>
+            <Text style={[styles.gateValue, perm.notifications ? styles.ok : styles.bad]}>{perm.notifications ? "허용됨" : "필수"}</Text>
           </View>
         )}
 
@@ -190,8 +206,13 @@ function Main() {
 
   const MAP_VIEW_KEY = "map_view_state_v1";
 
-  // ✅ 최근 3개 세션 슬롯 저장 키
   const SESSION_SLOTS_KEY = "session_slots_v1";
+  const MEMO_DELETED_KEY = "memo_deleted_savedat_v1";
+  const MEMO_TEXT_OVERRIDES_KEY = "memo_text_overrides_v1";
+
+  const { theme, reloadThemePref } = useAppTheme();
+  const styles = useMemo(() => createStyles(theme), [theme]);
+  const statusBarStyle = theme.mode === "dark" ? "light-content" : "dark-content";
 
   const [status, setStatus] = useState<string>("대기");
   const [isTracking, setIsTracking] = useState<boolean>(false);
@@ -201,9 +222,11 @@ function Main() {
 
   const [memos, setMemos] = useState<MemoItem[]>([]);
   const [route, setRoute] = useState<RoutePoint[]>([]);
+  const [homeSlot1, setHomeSlot1] = useState<SessionSnapshot | null>(null);
   const [manual, setManual] = useState<ManualLocationState>({ enabled: false, lat: 0, lng: 0, acc: 0 });
 
   const [historyVisible, setHistoryVisible] = useState<boolean>(false);
+  const [profileVisible, setProfileVisible] = useState<boolean>(false);
   const [permGateVisible, setPermGateVisible] = useState<boolean>(false);
   const [perm, setPerm] = useState<PermState>({ locationFg: false, locationBg: false, overlay: false, notifications: false });
   const [popup, setPopup] = useState<PopupState>({ visible: false, title: "", message: "", buttons: [] });
@@ -214,6 +237,8 @@ function Main() {
   const memoSigRef = useRef<string>("");
   const routeSigRef = useRef<string>("");
   const autoCenteredRef = useRef<boolean>(false);
+  const deletedMemoRef = useRef<Set<number>>(new Set());
+  const memoTextOverridesRef = useRef<Record<string, string>>({});
 
   const mapViewLoadedRef = useRef<boolean>(false);
   const mapViewSaveRef = useRef<any>(null);
@@ -246,17 +271,46 @@ function Main() {
     } catch {}
   }, []);
 
-  const pushSessionSnapshot = useCallback(async (snap: SessionSnapshot) => {
-    try {
-      const prev = await readSessionSlots();
-      const next: SessionSlots = {
-        slot1: snap,
-        slot2: prev.slot1 ?? null,
-        slot3: prev.slot2 ?? null
-      };
-      await writeSessionSlots(next);
-    } catch {}
-  }, [readSessionSlots, writeSessionSlots]);
+  const pushSessionSnapshot = useCallback(
+    async (snap: SessionSnapshot) => {
+      try {
+        const prev = await readSessionSlots();
+        const next: SessionSlots = {
+          slot1: snap,
+          slot2: prev.slot1 ?? null,
+          slot3: prev.slot2 ?? null
+        };
+        await writeSessionSlots(next);
+      } catch {}
+    },
+    [readSessionSlots, writeSessionSlots]
+  );
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const slots = await readSessionSlots();
+        setHomeSlot1(slots.slot1);
+      } catch {}
+      try {
+        const s = await AsyncStorage.getItem(MEMO_DELETED_KEY);
+        const arr = s ? JSON.parse(s) : [];
+        const set = new Set<number>();
+        if (Array.isArray(arr)) {
+          for (const v of arr) {
+            const n = numOrNull(v);
+            if (n !== null) set.add(n);
+          }
+        }
+        deletedMemoRef.current = set;
+      } catch {}
+      try {
+        const s = await AsyncStorage.getItem(MEMO_TEXT_OVERRIDES_KEY);
+        const v = s ? JSON.parse(s) : {};
+        if (v && typeof v === "object") memoTextOverridesRef.current = v;
+      } catch {}
+    })();
+  }, [readSessionSlots]);
 
   useEffect(() => {
     centerRef.current = center;
@@ -315,16 +369,10 @@ function Main() {
     try {
       const z = numOrNull(payload?.zoom ?? payload?.camera?.zoom ?? payload?.nativeEvent?.zoom);
       const ld = numOrNull(
-        payload?.latitudeDelta ??
-        payload?.latDelta ??
-        payload?.region?.latitudeDelta ??
-        payload?.nativeEvent?.latitudeDelta
+        payload?.latitudeDelta ?? payload?.latDelta ?? payload?.region?.latitudeDelta ?? payload?.nativeEvent?.latitudeDelta
       );
       const gd = numOrNull(
-        payload?.longitudeDelta ??
-        payload?.lngDelta ??
-        payload?.region?.longitudeDelta ??
-        payload?.nativeEvent?.longitudeDelta
+        payload?.longitudeDelta ?? payload?.lngDelta ?? payload?.region?.longitudeDelta ?? payload?.nativeEvent?.longitudeDelta
       );
 
       if (z === null && (ld === null || gd === null)) return;
@@ -333,9 +381,18 @@ function Main() {
         const next: MapViewState = { ...prev };
         let changed = false;
 
-        if (z !== null && next.zoom !== z) { next.zoom = z; changed = true; }
-        if (ld !== null && next.latDelta !== ld) { next.latDelta = ld; changed = true; }
-        if (gd !== null && next.lngDelta !== gd) { next.lngDelta = gd; changed = true; }
+        if (z !== null && next.zoom !== z) {
+          next.zoom = z;
+          changed = true;
+        }
+        if (ld !== null && next.latDelta !== ld) {
+          next.latDelta = ld;
+          changed = true;
+        }
+        if (gd !== null && next.lngDelta !== gd) {
+          next.lngDelta = gd;
+          changed = true;
+        }
 
         return changed ? next : prev;
       });
@@ -344,13 +401,14 @@ function Main() {
 
   const closePopup = useCallback(() => setPopup(p => ({ ...p, visible: false })), []);
 
-  const openPopup = useCallback((title: string, message: string, buttons?: PopupButton[]) => {
-    const btns: PopupButton[] = buttons?.length
-      ? buttons
-      : [{ text: "확인", variant: "primary", onPress: closePopup }];
+  const openPopup = useCallback(
+    (title: string, message: string, buttons?: PopupButton[]) => {
+      const btns: PopupButton[] = buttons?.length ? buttons : [{ text: "확인", variant: "primary", onPress: closePopup }];
 
-    setPopup({ visible: true, title, message, buttons: btns });
-  }, [closePopup]);
+      setPopup({ visible: true, title, message, buttons: btns });
+    },
+    [closePopup]
+  );
 
   const checkPermissions = useCallback(async (): Promise<PermState> => {
     if (Platform.OS !== "android") return { locationFg: true, locationBg: true, overlay: true, notifications: true };
@@ -361,7 +419,11 @@ function Main() {
     let notifications = true;
     if (Number(Platform.Version) >= 33) notifications = await PermissionsAndroid.check(PermissionsAndroid.PERMISSIONS.POST_NOTIFICATIONS);
     let overlay = false;
-    try { overlay = await Tracker.canDrawOverlays(); } catch { overlay = false; }
+    try {
+      overlay = await Tracker.canDrawOverlays();
+    } catch {
+      overlay = false;
+    }
     return { locationFg: fine || coarse, locationBg, overlay, notifications };
   }, []);
 
@@ -390,8 +452,11 @@ function Main() {
     setStatus("권한 확인 중...");
     const now = await checkPermissions();
     setPerm(now);
-    const need = !now.locationFg || (Number(Platform.Version) >= 29 && !now.locationBg) ||
-                 (Number(Platform.Version) >= 33 && !now.notifications) || !now.overlay;
+    const need =
+      !now.locationFg ||
+      (Number(Platform.Version) >= 29 && !now.locationBg) ||
+      (Number(Platform.Version) >= 33 && !now.notifications) ||
+      !now.overlay;
     if (!need) return true;
     setPermGateVisible(true);
     setStatus("대기");
@@ -428,7 +493,9 @@ function Main() {
     ];
     for (const fn of fns) {
       if (typeof fn === "function") {
-        try { await fn(text); } catch {}
+        try {
+          await fn(text);
+        } catch {}
       }
     }
   }, []);
@@ -436,7 +503,9 @@ function Main() {
   const cacheClipboardNow = useCallback(async () => {
     try {
       if (typeof (Tracker as any).cacheClipboard === "function") {
-        try { await (Tracker as any).cacheClipboard(); } catch {}
+        try {
+          await (Tracker as any).cacheClipboard();
+        } catch {}
       }
       const t = (await readClipboardText())?.toString?.() ?? "";
       const text = t.trim();
@@ -465,7 +534,10 @@ function Main() {
       ];
       for (const fn of noArg) {
         if (typeof fn === "function") {
-          try { await fn(); return; } catch {}
+          try {
+            await fn();
+            return;
+          } catch {}
         }
       }
 
@@ -478,7 +550,10 @@ function Main() {
       ];
       for (const fn of withArg) {
         if (typeof fn === "function") {
-          try { await fn(text); return; } catch {}
+          try {
+            await fn(text);
+            return;
+          } catch {}
         }
       }
 
@@ -502,7 +577,7 @@ function Main() {
     try {
       const geo: any = (globalThis as any).navigator?.geolocation;
       if (geo && typeof geo.getCurrentPosition === "function") {
-        await new Promise<void>((resolve) => {
+        await new Promise<void>(resolve => {
           geo.getCurrentPosition(
             (pos: any) => {
               const lat = numOrNull(pos?.coords?.latitude);
@@ -533,13 +608,25 @@ function Main() {
     if (!req.ok) {
       setStatus("대기");
       openPopup("필수 권한이 필요해요 🌸", req.hardDenied ? "설정으로 이동해서 권한을 켜주세요." : "권한을 허용해 주세요.", [
-        { text: "설정으로 이동", variant: "primary", onPress: async () => { try { await Linking.openSettings(); } catch {} } }
+        {
+          text: "설정으로 이동",
+          variant: "primary",
+          onPress: async () => {
+            try {
+              await Linking.openSettings();
+            } catch {}
+          }
+        }
       ]);
       return;
     }
     let overlayOk = false;
-    try { overlayOk = await Tracker.canDrawOverlays(); } catch {
-      setStatus("대기"); openPopup("오류", "오버레이 권한 확인 불가"); return;
+    try {
+      overlayOk = await Tracker.canDrawOverlays();
+    } catch {
+      setStatus("대기");
+      openPopup("오류", "오버레이 권한 확인 불가");
+      return;
     }
     if (!overlayOk) {
       setStatus("오버레이 권한 설정 이동...");
@@ -551,8 +638,11 @@ function Main() {
     }
     const again = await checkPermissions();
     setPerm(again);
-    const allOk = again.locationFg && (Number(Platform.Version) < 29 || again.locationBg) &&
-                  (Number(Platform.Version) < 33 || again.notifications) && again.overlay;
+    const allOk =
+      again.locationFg &&
+      (Number(Platform.Version) < 29 || again.locationBg) &&
+      (Number(Platform.Version) < 33 || again.notifications) &&
+      again.overlay;
     setPermGateVisible(!allOk);
     if (again.locationFg) await autoCenterOnce();
     setStatus("대기");
@@ -561,10 +651,28 @@ function Main() {
   const refreshMemosSilent = useCallback(async () => {
     try {
       const arr = await Tracker.getMemos();
-      const sorted = [...(arr || [])].sort((a, b) => Number(b.savedAt || 0) - Number(a.savedAt || 0));
+      const del = deletedMemoRef.current;
+
+      const filtered = (arr || []).filter((m: any) => {
+        const t = numOrNull(m?.savedAt);
+        if (t === null) return true;
+        return !del.has(t);
+      });
+
+      const ov = memoTextOverridesRef.current;
+      const patched = (filtered || []).map((m: any) => {
+        const t = numOrNull(m?.savedAt);
+        if (t === null) return m;
+        const key = String(t);
+        const nextText = ov?.[key];
+        if (typeof nextText !== "string") return m;
+        return { ...(m as any), text: nextText };
+      });
+
+      const sorted = [...patched].sort((a, b) => Number((b as any)?.savedAt || 0) - Number((a as any)?.savedAt || 0));
       const head = sorted[0];
       const tail = sorted[sorted.length - 1];
-      const sig = `${sorted.length}_${Number(head?.savedAt || 0)}_${Number(tail?.savedAt || 0)}`;
+      const sig = `${sorted.length}_${Number((head as any)?.savedAt || 0)}_${Number((tail as any)?.savedAt || 0)}`;
       if (sig === memoSigRef.current) return;
       memoSigRef.current = sig;
       setMemos(sorted);
@@ -585,7 +693,9 @@ function Main() {
       routeSigRef.current = sig;
 
       setRoute(next);
-    } catch { setRoute([]); }
+    } catch {
+      setRoute([]);
+    }
   }, []);
 
   const refreshManual = useCallback(async () => {
@@ -595,18 +705,141 @@ function Main() {
       if (s?.enabled && typeof s.lat === "number" && typeof s.lng === "number") {
         setCenterStable(s.lat, s.lng, true);
       }
-    } catch { setManual({ enabled: false, lat: 0, lng: 0, acc: 0 }); }
+    } catch {
+      setManual({ enabled: false, lat: 0, lng: 0, acc: 0 });
+    }
   }, [setCenterStable]);
 
-  const refreshAll = useCallback(async (withError = false) => {
-    try {
-      await refreshMemosSilent();
-      await refreshRouteSilent();
-      await refreshManual();
-    } catch (e: any) {
-      if (withError) openPopup("데이터 로드 실패 🥲", String(e?.message ?? e));
-    }
-  }, [refreshManual, refreshMemosSilent, refreshRouteSilent, openPopup]);
+    const refreshAll = useCallback(
+    async (withError = false) => {
+      try {
+        await refreshMemosSilent();
+        await refreshRouteSilent();
+        await refreshManual();
+      } catch (e: any) {
+        if (withError) openPopup("데이터 로드 실패 🥲", String(e?.message ?? e));
+      }
+    },
+    [refreshManual, refreshMemosSilent, refreshRouteSilent, openPopup]
+  );
+
+  const handleDeleteMemoPin = useCallback(
+    async (pin: MemoPin) => {
+      const t = numOrNull((pin as any)?.savedAt);
+      if (t === null) return;
+
+      try {
+        const nextSet = new Set<number>(deletedMemoRef.current);
+        nextSet.add(t);
+        deletedMemoRef.current = nextSet;
+        try {
+          await AsyncStorage.setItem(MEMO_DELETED_KEY, JSON.stringify(Array.from(nextSet)));
+        } catch {}
+
+        try {
+          const slots = await readSessionSlots();
+          const prune = (s: SessionSnapshot | null) => {
+            if (!s) return s;
+            const prev = s.memos || [];
+            const next = prev.filter((m: any) => Number((m as any)?.savedAt || 0) !== t);
+            return next.length === prev.length ? s : { ...s, memos: next };
+          };
+
+          const nextSlots: SessionSlots = {
+            slot1: prune(slots.slot1),
+            slot2: prune(slots.slot2),
+            slot3: prune(slots.slot3)
+          };
+
+          await writeSessionSlots(nextSlots);
+          setHomeSlot1(nextSlots.slot1);
+        } catch {}
+
+        setMemos(prev => prev.filter((m: any) => Number((m as any)?.savedAt || 0) !== t));
+      } catch (e: any) {
+        openPopup("삭제 실패", String(e?.message ?? e));
+      }
+    },
+    [openPopup, readSessionSlots, writeSessionSlots]
+  );
+
+  const handleUpdateMemoPin = useCallback(
+    async (pin: MemoPin, nextTextRaw: string) => {
+      const t = numOrNull((pin as any)?.savedAt);
+      if (t === null) return;
+
+      const nextText = (nextTextRaw ?? "").toString();
+
+      try {
+        const fns = [
+          (Tracker as any).updateMemoText,
+          (Tracker as any).updateMemo,
+          (Tracker as any).editMemoText,
+          (Tracker as any).setMemoText,
+          (Tracker as any).updateNoteText,
+          (Tracker as any).updateNote,
+          (Tracker as any).editNoteText,
+          (Tracker as any).setNoteText
+        ];
+
+        for (const fn of fns) {
+          if (typeof fn !== "function") continue;
+          try {
+            await fn(t, nextText);
+            break;
+          } catch {}
+          try {
+            await fn({ savedAt: t, text: nextText });
+            break;
+          } catch {}
+        }
+
+        try {
+          const key = String(t);
+          memoTextOverridesRef.current = { ...(memoTextOverridesRef.current || {}), [key]: nextText };
+          await AsyncStorage.setItem(MEMO_TEXT_OVERRIDES_KEY, JSON.stringify(memoTextOverridesRef.current));
+        } catch {}
+
+        setMemos(prev =>
+          prev.map((m: any) => {
+            const mt = numOrNull((m as any)?.savedAt);
+            if (mt !== null && mt === t) return { ...(m as any), text: nextText };
+            return m;
+          })
+        );
+
+        try {
+          const slots = await readSessionSlots();
+          const patch = (s: SessionSnapshot | null) => {
+            if (!s) return s;
+            const prev = s.memos || [];
+            let changed = false;
+            const next = prev.map((m: any) => {
+              const mt = numOrNull((m as any)?.savedAt);
+              if (mt !== null && mt === t) {
+                changed = true;
+                return { ...(m as any), text: nextText };
+              }
+              return m;
+            });
+            return changed ? { ...s, memos: next } : s;
+          };
+
+          const nextSlots: SessionSlots = {
+            slot1: patch(slots.slot1),
+            slot2: patch(slots.slot2),
+            slot3: patch(slots.slot3)
+          };
+
+          await writeSessionSlots(nextSlots);
+          setHomeSlot1(nextSlots.slot1);
+        } catch {}
+      } catch (e: any) {
+        openPopup("수정 실패", String(e?.message ?? e));
+      }
+    },
+    [openPopup, readSessionSlots, writeSessionSlots]
+  );
 
   useEffect(() => {
     let mounted = true;
@@ -616,45 +849,67 @@ function Main() {
         if (ranRef.current || !Updates.isEnabled) return;
         ranRef.current = true;
         const res = await Updates.checkForUpdateAsync();
-        if (res.isAvailable) { await Updates.fetchUpdateAsync(); if (mounted) setUpdateReady(true); }
+        if (res.isAvailable) {
+          await Updates.fetchUpdateAsync();
+          if (mounted) setUpdateReady(true);
+        }
       } catch {}
     })();
-    return () => { mounted = false; };
+    return () => {
+      mounted = false;
+    };
   }, []);
+
 
   useEffect(() => {
     if (!updateReady || isTracking || permGateVisible || popup.visible || historyVisible) return;
-    (async () => { try { await Updates.reloadAsync(); } catch {} })();
+    (async () => {
+      try {
+        await Updates.reloadAsync();
+      } catch {}
+    })();
   }, [updateReady, isTracking, permGateVisible, popup.visible, historyVisible]);
 
   useEffect(() => {
     (async () => {
       const p = await checkPermissions();
       setPerm(p);
-      const need = !p.locationFg || (Number(Platform.Version) >= 29 && !p.locationBg) ||
-                   (Number(Platform.Version) >= 33 && !p.notifications) || !p.overlay;
+      const need =
+        !p.locationFg ||
+        (Number(Platform.Version) >= 29 && !p.locationBg) ||
+        (Number(Platform.Version) >= 33 && !p.notifications) ||
+        !p.overlay;
       if (need) setPermGateVisible(true);
       await refreshAll();
+      const slots = await readSessionSlots();
+      setHomeSlot1(slots.slot1 ?? null);
       if (p.locationFg) await autoCenterOnce();
     })();
-  }, [checkPermissions, refreshAll, autoCenterOnce]);
+  }, [checkPermissions, refreshAll, autoCenterOnce, readSessionSlots]);
 
   useEffect(() => {
-    const sub = AppState.addEventListener("change", async (next) => {
+    const sub = AppState.addEventListener("change", async next => {
       const prev = appStateRef.current;
       appStateRef.current = next;
       if (prev.match(/inactive|background/) && next === "active") {
+        await reloadThemePref();
+
         const p = await checkPermissions();
         setPerm(p);
-        const allOk = p.locationFg && (Number(Platform.Version) < 29 || p.locationBg) &&
-                      (Number(Platform.Version) < 33 || p.notifications) && p.overlay;
+        const allOk =
+          p.locationFg &&
+          (Number(Platform.Version) < 29 || p.locationBg) &&
+          (Number(Platform.Version) < 33 || p.notifications) &&
+          p.overlay;
         setPermGateVisible(!allOk);
         await refreshAll();
+        const slots = await readSessionSlots();
+        setHomeSlot1(slots.slot1 ?? null);
         if (p.locationFg) await autoCenterOnce();
       }
     });
     return () => sub.remove();
-  }, [checkPermissions, refreshAll, autoCenterOnce]);
+  }, [checkPermissions, refreshAll, autoCenterOnce, reloadThemePref, readSessionSlots]);
 
   useEffect(() => {
     const start = async () => {
@@ -662,20 +917,22 @@ function Main() {
       await cacheClipboardNow();
       clipPollRef.current = setInterval(async () => {
         await cacheClipboardNow();
-      }, 1200);
+      }, 60000);
     };
     const stop = () => {
       if (clipPollRef.current) clearInterval(clipPollRef.current);
       clipPollRef.current = null;
     };
 
-    const sub = AppState.addEventListener("change", async (next) => {
+    const sub = AppState.addEventListener("change", async next => {
       if (next === "active") await start();
       else stop();
     });
 
     if (AppState.currentState === "active") {
-      (async () => { await start(); })();
+      (async () => {
+        await start();
+      })();
     }
 
     return () => {
@@ -708,20 +965,25 @@ function Main() {
     })();
 
     return () => {
-      try { (sub as any).remove?.(); } catch {}
+      try {
+        (sub as any).remove?.();
+      } catch {}
     };
   }, [refreshAll, saveFromClipboard]);
 
   useEffect(() => {
     try {
-      const sub = Tracker.onNoteSaved(async (ev) => {
-        await refreshMemosSilent(); await refreshRouteSilent();
+      const sub = Tracker.onNoteSaved(async ev => {
+        await refreshMemosSilent();
+        await refreshRouteSilent();
         const lat = numOrNull((ev as any)?.lat);
         const lng = numOrNull((ev as any)?.lng);
         if (lat !== null && lng !== null && !manual.enabled) setCenterStable(lat, lng);
       });
       return () => sub.remove();
-    } catch { return; }
+    } catch {
+      return;
+    }
   }, [manual.enabled, refreshMemosSilent, refreshRouteSilent, setCenterStable]);
 
   useEffect(() => {
@@ -730,18 +992,92 @@ function Main() {
       pollRef.current = null;
       return;
     }
-    pollRef.current = setInterval(async () => {
+
+    const FAST_MS = 2500;
+    const SLOW_MS = 10000;
+
+    const modeRef = { current: "fast" as "fast" | "slow" };
+    const candidateRef = { current: null as null | "fast" | "slow" };
+    const candidateSinceRef = { current: 0 };
+    const lastLocRef = { current: null as null | { lat: number; lng: number; t: number } };
+    let currentIntervalMs = FAST_MS;
+
+    const toRad = (d: number) => (d * Math.PI) / 180;
+    const haversineM = (a: { lat: number; lng: number }, b: { lat: number; lng: number }) => {
+      const R = 6371000;
+      const dLat = toRad(b.lat - a.lat);
+      const dLng = toRad(b.lng - a.lng);
+      const s1 = Math.sin(dLat / 2);
+      const s2 = Math.sin(dLng / 2);
+      const aa = s1 * s1 + Math.cos(toRad(a.lat)) * Math.cos(toRad(b.lat)) * s2 * s2;
+      const c = 2 * Math.atan2(Math.sqrt(aa), Math.sqrt(1 - aa));
+      const d = R * c;
+      return Number.isFinite(d) ? d : 0;
+    };
+
+    const tick = async () => {
+      let desired: "fast" | "slow" | null = null;
+      const nowMs = Date.now();
+
       try {
         if (!manual.enabled) {
           const last = await Tracker.getLastLocation();
           if (last && typeof last.lat === "number" && typeof last.lng === "number") {
+            const curT = numOrNull((last as any)?.t) ?? nowMs;
+            const prev = lastLocRef.current;
+
+            if (prev) {
+              const distM = haversineM(prev, { lat: last.lat, lng: last.lng });
+              const dtS = Math.max(0.001, (curT - prev.t) / 1000);
+              const speedMps = distM / dtS;
+
+              if (speedMps >= 1.2 || distM >= 15) desired = "fast";
+              else if (speedMps <= 0.3 && distM <= 5) desired = "slow";
+            }
+
+            lastLocRef.current = { lat: last.lat, lng: last.lng, t: curT };
+
             setCenterStable(last.lat, last.lng);
           }
         }
       } catch {}
-      await refreshMemosSilent(); await refreshRouteSilent();
-    }, 2500);
-    return () => { if (pollRef.current) clearInterval(pollRef.current); pollRef.current = null; };
+
+      try {
+        if (desired && desired !== modeRef.current) {
+          if (candidateRef.current !== desired) {
+            candidateRef.current = desired;
+            candidateSinceRef.current = nowMs;
+          } else {
+            const needMs = desired === "slow" ? 12000 : 5000;
+            if (nowMs - candidateSinceRef.current >= needMs) {
+              modeRef.current = desired;
+              candidateRef.current = null;
+              candidateSinceRef.current = 0;
+
+              const nextMs = modeRef.current === "slow" ? SLOW_MS : FAST_MS;
+              if (nextMs !== currentIntervalMs) {
+                currentIntervalMs = nextMs;
+                if (pollRef.current) clearInterval(pollRef.current);
+                pollRef.current = setInterval(tick, currentIntervalMs);
+              }
+            }
+          }
+        } else {
+          candidateRef.current = null;
+          candidateSinceRef.current = 0;
+        }
+      } catch {}
+
+      await refreshMemosSilent();
+      await refreshRouteSilent();
+    };
+
+    pollRef.current = setInterval(tick, currentIntervalMs);
+
+    return () => {
+      if (pollRef.current) clearInterval(pollRef.current);
+      pollRef.current = null;
+    };
   }, [isTracking, manual.enabled, refreshMemosSilent, refreshRouteSilent, setCenterStable]);
 
   const onStart = async () => {
@@ -757,11 +1093,12 @@ function Main() {
       setStatus("기록 중");
       await refreshAll();
     } catch (e: any) {
-      setStatus("대기"); openPopup("시작이 안 됐어요 🥲", String(e?.message ?? e));
+      setStatus("대기");
+      openPopup("시작이 안 됐어요 🥲", String(e?.message ?? e));
     }
   };
 
-  const onStop = async () => {
+    const onStop = async () => {
     try {
       setStatus("종료 중...");
 
@@ -785,11 +1122,8 @@ function Main() {
         allMemos = [];
       }
 
-      // ✅ 세션 스냅샷 생성 및 슬롯 저장(최신=slot1)
       try {
-        const sessionMemos = endedSessionId
-          ? allMemos.filter((m: any) => (m as any)?.sessionId === endedSessionId)
-          : [];
+        const sessionMemos = endedSessionId ? allMemos.filter((m: any) => (m as any)?.sessionId === endedSessionId) : [];
 
         let rawRoute: any[] = [];
         try {
@@ -824,25 +1158,90 @@ function Main() {
         };
 
         await pushSessionSnapshot(snap);
+        setHomeSlot1(snap);
       } catch {}
 
       sessionStartedAtRef.current = null;
 
-      const km = typeof r.totalKm === "number" ? r.totalKm : (r.totalMeters || r.distanceMeters || 0) / 1000;
-      const min = typeof r.totalMinutes === "number" ? r.totalMinutes : (r.totalSeconds ? r.totalSeconds / 60 : (r.durationMs || 0) / 60000);
+      const calcKm = (pts: RoutePoint[]) => {
+        const R = 6371;
+        const toRad = (d: number) => (d * Math.PI) / 180;
+        let sum = 0;
+        for (let i = 1; i < pts.length; i++) {
+          const a = pts[i - 1];
+          const b = pts[i];
+          const dLat = toRad(b.lat - a.lat);
+          const dLng = toRad(b.lng - a.lng);
+          const s1 = Math.sin(dLat / 2);
+          const s2 = Math.sin(dLng / 2);
+          const aa = s1 * s1 + Math.cos(toRad(a.lat)) * Math.cos(toRad(b.lat)) * s2 * s2;
+          const c = 2 * Math.atan2(Math.sqrt(aa), Math.sqrt(1 - aa));
+          const d = R * c;
+          if (Number.isFinite(d)) sum += d;
+        }
+        return sum;
+      };
+
+      const basePts = (route || []).filter(p => typeof p?.lat === "number" && typeof p?.lng === "number");
+      const startedAtMs = typeof startedAt === "number" ? startedAt : null;
+      const endedAtMs = typeof endedAt === "number" ? endedAt : numOrNull(endedAt) ?? 0;
+
+      const pts =
+        startedAtMs !== null
+          ? (() => {
+              const filtered = basePts.filter(p => {
+                const tt = numOrNull((p as any)?.t);
+                if (tt === null) return false;
+                return tt >= startedAtMs && tt <= endedAtMs;
+              });
+              return filtered.length >= 2 ? filtered : basePts;
+            })()
+          : basePts;
+
+      const km = pts.length >= 2 ? calcKm(pts) : 0;
+      const min = startedAtMs !== null && endedAtMs > startedAtMs ? (endedAtMs - startedAtMs) / 60000 : 0;
       const lines = [`총 거리: ${km.toFixed(2)}km`, `총 시간: ${min.toFixed(1)}분`, `총 메모: ${memoCount}개`];
 
       await refreshAll();
       openPopup("오늘 기록 완료", lines.join("\n"), [{ text: "확인", variant: "primary" }]);
     } catch (e: any) {
-      setStatus("기록 중"); openPopup("종료가 안 됐어요 🥲", String(e?.message ?? e));
+      setStatus("기록 중");
+      openPopup("종료가 안 됐어요 🥲", String(e?.message ?? e));
     }
   };
 
+  const homeRoute = useMemo(() => {
+    if (isTracking) return route;
+    const r = homeSlot1?.route;
+    if (Array.isArray(r) && r.length) return r;
+    return route;
+  }, [isTracking, route, homeSlot1]);
+
+  const homeMemos = useMemo(() => {
+    if (isTracking && sessionId) {
+      return memos.filter((m: any) => (m as any)?.sessionId === sessionId);
+    }
+    const sm = homeSlot1?.memos;
+    if (Array.isArray(sm) && sm.length) return sm;
+    return memos;
+  }, [isTracking, sessionId, memos, homeSlot1]);
+
+    const displayMemos = useMemo(() => {
+    return isTracking ? memos : homeSlot1?.memos ?? [];
+  }, [isTracking, memos, homeSlot1]);
+
+  const displayRoute = useMemo(() => {
+    return isTracking ? route : homeSlot1?.route ?? [];
+  }, [isTracking, route, homeSlot1]);
+
+  const displaySessionId = useMemo(() => {
+    return isTracking ? sessionId : homeSlot1?.sessionId ?? null;
+  }, [isTracking, sessionId, homeSlot1]);
+
   const memoPinMeta = useMemo(() => {
-    return memos
-      .filter(m => typeof m?.lat === "number" && typeof m?.lng === "number")
-      .map((m, i) => {
+    return displayMemos
+      .filter(m => typeof (m as any)?.lat === "number" && typeof (m as any)?.lng === "number")
+      .map((m: any, i: number) => {
         const id = `${m.sessionId ?? "s"}_${m.savedAt ?? 0}_${i}`;
         const fullText = (m.text ?? "").toString();
         const oneLine = fullText.replace(/\s+/g, " ").trim();
@@ -852,34 +1251,27 @@ function Main() {
           id,
           lat: m.lat as number,
           lng: m.lng as number,
+          text: fullText,
           previewText,
           fullText,
           savedAt: typeof m.savedAt === "number" ? m.savedAt : undefined,
           sessionId: m.sessionId
         };
       });
-  }, [memos]);
+  }, [displayMemos]);
 
-  const memoPins: MemoPin[] = useMemo(() => {
-    return memoPinMeta.map(p => ({
-      id: p.id,
-      lat: p.lat,
-      lng: p.lng,
-      text: p.previewText,
-      savedAt: p.savedAt,
-      sessionId: p.sessionId
-    }));
-  }, [memoPinMeta]);
+  const memoPins = useMemo(() => memoPinMeta as unknown as MemoPin[], [memoPinMeta]);
 
   const memoSummary = useMemo(() => {
-    return `총 메모 ${memos.length}개`;
-  }, [memos.length]);
+    return `총 메모 ${displayMemos.length}개`;
+  }, [displayMemos.length]);
 
   const fitSessionKey = useMemo(() => {
-    if (!sessionId) return undefined;
-    const enough = route.length >= 2 || memoPins.length >= 2;
-    return enough ? sessionId : undefined;
-  }, [sessionId, route.length, memoPins.length]);
+    if (!displaySessionId) return undefined;
+    const enough = displayRoute.length >= 2 || memoPins.length >= 2;
+    return enough ? displaySessionId : undefined;
+  }, [displaySessionId, displayRoute.length, memoPins.length]);
+
 
   const statusLabel = useMemo(() => {
     if (isTracking) return "기록중입니다.";
@@ -891,14 +1283,30 @@ function Main() {
 
   return (
     <SafeAreaView style={styles.root} edges={["top", "left", "right"]}>
-      <StatusBar barStyle="dark-content" backgroundColor={styles.root.backgroundColor as any} />
+      <StatusBar barStyle={statusBarStyle} backgroundColor={theme.statusBarBg} />
 
-      {historyVisible ? (
+      {profileVisible ? (
+        <ProfileScreen
+          onClose={async () => {
+            setProfileVisible(false);
+            await reloadThemePref();
+          }}
+        />
+      ) : historyVisible ? (
         <MemoHistoryScreen
           memos={memos}
           route={route}
           sessionId={sessionId}
-          onClose={() => setHistoryVisible(false)}
+          onClose={() => {
+            setHistoryVisible(false);
+            (async () => {
+              try {
+                const slots = await readSessionSlots();
+                setHomeSlot1(slots.slot1);
+              } catch {}
+              await refreshAll();
+            })();
+          }}
         />
       ) : (
         <>
@@ -915,10 +1323,17 @@ function Main() {
 
                 <TouchableOpacity
                   activeOpacity={0.88}
-                  onPress={async () => { await refreshAll(true); setHistoryVisible(true); }}
+                  onPress={async () => {
+                    await refreshAll(true);
+                    setHistoryVisible(true);
+                  }}
                   style={styles.headerMemoBtn}
                 >
-                  <Text style={styles.headerMemoBtnText}>메모</Text>
+                  <Text style={styles.headerMemoBtnText}>메 모</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity activeOpacity={0.88} onPress={() => setProfileVisible(true)} style={styles.headerGearBtn}>
+                  <Ionicons name="settings-outline" size={20} color={theme.icon} />
                 </TouchableOpacity>
               </View>
             </View>
@@ -928,8 +1343,10 @@ function Main() {
             <GoogleMapAny
               center={center}
               style={StyleSheet.absoluteFill}
-              route={route}
+              route={displayRoute}
               memoPins={memoPins}
+              onDeleteMemoPin={handleDeleteMemoPin}
+              onUpdateMemoPin={handleUpdateMemoPin}
               fitSessionId={fitSessionKey}
               zoom={mapView.zoom}
               initialZoom={mapView.zoom}
@@ -939,89 +1356,216 @@ function Main() {
               onZoomChanged={handleMapViewChange}
               onCameraChanged={handleMapViewChange}
               onRegionChangeComplete={handleMapViewChange}
+              customMapStyle={theme.mode === "dark" ? DARK_MAP_STYLE : undefined}
             />
           </View>
 
           <View style={[styles.bottomBar, { paddingBottom: bottomPad }]}>
             <View style={styles.bottomRow}>
-              <TouchableOpacity activeOpacity={0.88} onPress={isTracking ? onStop : onStart} style={[styles.btn, isTracking ? styles.btnStop : styles.btnStart]}>
+              <TouchableOpacity
+                activeOpacity={0.88}
+                onPress={isTracking ? onStop : onStart}
+                style={[styles.btn, isTracking ? styles.btnStop : styles.btnStart]}
+              >
                 <Text style={styles.btnText}>{isTracking ? "기록완료" : "기록시작"}</Text>
               </TouchableOpacity>
             </View>
-            <Text style={styles.hint}>홈 지도에 핀이 계속 표시됩니다. 핀을 탭하면 지도에서 바로 메모를 확인할 수 있어요. (경로/핀은 자동으로 화면에 맞춰집니다)</Text>
+            <Text style={styles.hint}>
+              홈 지도에 핀이 계속 표시됩니다. 핀을 탭하면 지도에서 바로 메모를 확인할 수 있어요. (경로/핀은 자동으로 화면에 맞춰집니다)
+            </Text>
           </View>
         </>
       )}
 
-      {permGateVisible && <PermissionGate perm={perm} onFix={runPermissionFixFlow} />}
-      <AlertPopup state={popup} onClose={closePopup} />
+      {permGateVisible && <PermissionGate perm={perm} onFix={runPermissionFixFlow} styles={styles} />}
+      <AlertPopup state={popup} onClose={closePopup} styles={styles} />
     </SafeAreaView>
   );
 }
 
 export default function App() {
   return (
-    <SafeAreaProvider>
-      <Main />
-    </SafeAreaProvider>
+    <ThemeProvider>
+      <SafeAreaProvider>
+        <Main />
+      </SafeAreaProvider>
+    </ThemeProvider>
   );
 }
 
 // ------------------------------------------------------------------
 // 4. Styles
 // ------------------------------------------------------------------
-const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: "#F7FAFF" },
-  header: { paddingHorizontal: 16, paddingTop: 10, paddingBottom: 10, backgroundColor: "#FFFFFF", borderBottomWidth: 1, borderBottomColor: "rgba(29,44,59,0.10)" },
-  title: { color: "#1D2C3B", fontSize: 18, fontWeight: "900" },
-  sub: { marginTop: 4, color: "rgba(29,44,59,0.70)", fontSize: 12, fontWeight: "700" },
-  sub2: { marginTop: 2, color: "rgba(29,44,59,0.52)", fontSize: 11 },
-  mapWrap: { flex: 1, backgroundColor: "#EAF4FF" },
+function createStyles(theme: AppTheme) {
+  return StyleSheet.create({
+    root: { flex: 1, backgroundColor: theme.rootBg },
+    header: {
+      paddingHorizontal: 16,
+      paddingTop: 10,
+      paddingBottom: 10,
+      backgroundColor: theme.headerBg,
+      borderBottomWidth: 1,
+      borderBottomColor: theme.border
+    },
+    title: { color: theme.text, fontSize: 18, fontWeight: "900" },
+    sub: { marginTop: 4, color: theme.textSub, fontSize: 12, fontWeight: "700" },
+    sub2: { marginTop: 2, color: theme.textSub2, fontSize: 11 },
+    mapWrap: { flex: 1, backgroundColor: theme.mapBg },
 
-  headerTopRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 12 },
-  headerTextCol: { flex: 1 },
-  headerStatus: { color: "#1D2C3B", fontSize: 14, fontWeight: "900", flex: 1 },
+    headerTopRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 12 },
+    headerTextCol: { flex: 1 },
+    headerStatus: { color: theme.text, fontSize: 18, fontWeight: "700", flex: 1 },
 
-  headerRightRow: { flexDirection: "row", alignItems: "center", gap: 10 },
-  memoCountText: { color: "rgba(29,44,59,0.70)", fontSize: 12, fontWeight: "900" },
+    headerRightRow: { flexDirection: "row", alignItems: "center", gap: 10 },
+    memoCountText: { color: theme.textSub, fontSize: 12, fontWeight: "500" },
 
-  headerMemoBtn: { paddingHorizontal: 18, height: 44, borderRadius: 16, alignItems: "center", justifyContent: "center", backgroundColor: "#D9FFF2", borderWidth: 1, borderColor: "rgba(47, 183, 163, 0.45)" },
-  headerMemoBtnText: { color: "#13443D", fontSize: 13, fontWeight: "900" },
+    headerMemoBtn: {
+      paddingHorizontal: 18,
+      height: 44,
+      borderRadius: 16,
+      alignItems: "center",
+      justifyContent: "center",
+      backgroundColor: theme.accentBg,
+      borderWidth: 1,
+      borderColor: theme.accentBorder
+    },
+    headerMemoBtnText: { color: theme.accentText, fontSize: 13, fontWeight: "900" },
+    headerGearBtn: {
+      width: 44,
+      height: 44,
+      borderRadius: 16,
+      alignItems: "center",
+      justifyContent: "center",
+      backgroundColor: theme.accentBg,
+      borderWidth: 1,
+      borderColor: theme.accentBorder
+    },
 
-  bottomBar: { position: "absolute", left: 0, right: 0, bottom: 0, paddingTop: 10, paddingHorizontal: 16, backgroundColor: "rgba(255,255,255,0.96)", borderTopWidth: 1, borderTopColor: "rgba(29,44,59,0.10)", zIndex: 9999, elevation: 50 },
-  bottomRow: { flexDirection: "row", gap: 10, alignItems: "center" },
-  btn: { flex: 1, height: 52, borderRadius: 16, alignItems: "center", justifyContent: "center", borderWidth: 1 },
-  btnStart: { backgroundColor: "#BDEBFF", borderColor: "rgba(120, 190, 255, 0.55)" },
-  btnStop: { backgroundColor: "#FFD6E7", borderColor: "rgba(255, 140, 190, 0.55)" },
-  btnText: { color: "#18324A", fontSize: 16, fontWeight: "900" },
-  btnMini: { width: 76, height: 52, borderRadius: 16, alignItems: "center", justifyContent: "center", backgroundColor: "#D9FFF2", borderWidth: 1, borderColor: "rgba(47, 183, 163, 0.45)" },
-  btnMiniText: { color: "#13443D", fontSize: 13, fontWeight: "900" },
-  hint: { marginTop: 8, marginBottom: 6, color: "rgba(29,44,59,0.55)", fontSize: 11, lineHeight: 15 },
+    bottomBar: {
+      position: "absolute",
+      left: 0,
+      right: 0,
+      bottom: 0,
+      paddingTop: 10,
+      paddingHorizontal: 16,
+      backgroundColor: theme.mode === "dark" ? "rgba(15,21,28,0.94)" : "rgba(255,255,255,0.96)",
+      borderTopWidth: 1,
+      borderTopColor: theme.border,
+      zIndex: 9999,
+      elevation: 50
+    },
+    bottomRow: { flexDirection: "row", gap: 10, alignItems: "center" },
+    btn: { flex: 1, height: 52, borderRadius: 16, alignItems: "center", justifyContent: "center", borderWidth: 1 },
+    btnStart: { backgroundColor: theme.startBg, borderColor: theme.startBorder },
+    btnStop: { backgroundColor: theme.stopBg, borderColor: theme.stopBorder },
+    btnText: { color: theme.primaryTextOnColor, fontSize: 16, fontWeight: "700" },
+    btnMini: {
+      width: 76,
+      height: 52,
+      borderRadius: 16,
+      alignItems: "center",
+      justifyContent: "center",
+      backgroundColor: theme.accentBg,
+      borderWidth: 1,
+      borderColor: theme.accentBorder
+    },
+    btnMiniText: { color: theme.accentText, fontSize: 13, fontWeight: "700" },
+    hint: { marginTop: 8, marginBottom: 6, color: theme.textMuted, fontSize: 11, lineHeight: 15 },
 
-  gateRoot: { position: "absolute", left: 0, right: 0, top: 0, bottom: 0, backgroundColor: "rgba(29,44,59,0.28)", justifyContent: "center", alignItems: "center", paddingHorizontal: 16, zIndex: 20000 },
-  gateBox: { width: "100%", maxWidth: 390, backgroundColor: "#FFF7FB", borderRadius: 22, borderWidth: 1, borderColor: "rgba(255, 182, 213, 0.85)", paddingHorizontal: 16, paddingTop: 16, paddingBottom: 14 },
-  gateTitle: { color: "#3B2A3F", fontSize: 15, fontWeight: "900", marginBottom: 6 },
-  gateDesc: { color: "rgba(59,42,63,0.75)", fontSize: 12, marginBottom: 10, lineHeight: 16 },
-  gateRow: { flexDirection: "row", justifyContent: "space-between", paddingVertical: 7 },
-  gateLabel: { color: "rgba(59,42,63,0.85)", fontSize: 12, fontWeight: "700" },
-  gateValue: { fontSize: 12, fontWeight: "900" },
-  ok: { color: "#2FB7A3" },
-  bad: { color: "#FF5D7A" },
-  gateBtn: { marginTop: 12, height: 48, borderRadius: 16, backgroundColor: "#BDEBFF", alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: "rgba(120, 190, 255, 0.55)" },
-  gateBtnText: { color: "#18324A", fontSize: 14, fontWeight: "900" },
-  gateHint: { marginTop: 10, color: "rgba(59,42,63,0.65)", fontSize: 11, lineHeight: 16 },
+    gateRoot: {
+      position: "absolute",
+      left: 0,
+      right: 0,
+      top: 0,
+      bottom: 0,
+      backgroundColor: theme.dimBg,
+      justifyContent: "center",
+      alignItems: "center",
+      paddingHorizontal: 16,
+      zIndex: 20000
+    },
+    gateBox: {
+      width: "100%",
+      maxWidth: 390,
+      backgroundColor: theme.gateBoxBg,
+      borderRadius: 22,
+      borderWidth: 1,
+      borderColor: theme.gateBoxBorder,
+      paddingHorizontal: 16,
+      paddingTop: 16,
+      paddingBottom: 14
+    },
+    gateTitle: { color: theme.gateTitle, fontSize: 15, fontWeight: "900", marginBottom: 6 },
+    gateDesc: { color: theme.gateDesc, fontSize: 12, marginBottom: 10, lineHeight: 16 },
+    gateRow: { flexDirection: "row", justifyContent: "space-between", paddingVertical: 7 },
+    gateLabel: { color: theme.gateLabel, fontSize: 12, fontWeight: "700" },
+    gateValue: { fontSize: 12, fontWeight: "900" },
+    ok: { color: theme.ok },
+    bad: { color: theme.bad },
+    gateBtn: {
+      marginTop: 12,
+      height: 48,
+      borderRadius: 16,
+      backgroundColor: theme.startBg,
+      alignItems: "center",
+      justifyContent: "center",
+      borderWidth: 1,
+      borderColor: theme.startBorder
+    },
+    gateBtnText: { color: theme.primaryTextOnColor, fontSize: 14, fontWeight: "900" },
+    gateHint: { marginTop: 10, color: theme.gateHint, fontSize: 11, lineHeight: 16 },
 
-  popupDim: { flex: 1, backgroundColor: "rgba(29,44,59,0.28)", justifyContent: "center", alignItems: "center", paddingHorizontal: 16 },
-  popupBox: { width: "100%", maxWidth: 380, backgroundColor: "#F3FBFF", borderRadius: 22, borderWidth: 1, borderColor: "rgba(170, 219, 255, 0.9)", paddingHorizontal: 16, paddingTop: 16, paddingBottom: 12 },
-  popupTitle: { color: "#1D2C3B", fontSize: 15, fontWeight: "900" },
-  popupMsg: { marginTop: 8, color: "rgba(29,44,59,0.78)", fontSize: 12, lineHeight: 18 },
-  popupBtns: { marginTop: 12, gap: 10 },
-  popupBtn: { height: 46, borderRadius: 16, alignItems: "center", justifyContent: "center", borderWidth: 1 },
-  popupBtnPrimary: { backgroundColor: "#FFD6E7", borderColor: "rgba(255, 140, 190, 0.55)" },
-  popupBtnSecondary: { backgroundColor: "#D9FFF2", borderColor: "rgba(47, 183, 163, 0.45)" },
-  popupBtnText: { fontSize: 13, fontWeight: "900" },
-  popupBtnTextPrimary: { color: "#3B2A3F" },
-  popupBtnTextSecondary: { color: "#13443D" },
-  popupStickerRow: { marginTop: 10, flexDirection: "row", justifyContent: "center", gap: 10 },
-  popupSticker: { fontSize: 16 }
-});
+    popupDim: { flex: 1, backgroundColor: theme.dimBg, justifyContent: "center", alignItems: "center", paddingHorizontal: 16 },
+    popupBox: {
+      width: "100%",
+      maxWidth: 380,
+      backgroundColor: theme.popupBoxBg,
+      borderRadius: 22,
+      borderWidth: 1,
+      borderColor: theme.popupBoxBorder,
+      paddingHorizontal: 16,
+      paddingTop: 16,
+      paddingBottom: 12
+    },
+    popupTitle: { color: theme.popupTitle, fontSize: 15, fontWeight: "900" },
+    popupMsg: { marginTop: 8, color: theme.popupMsg, fontSize: 12, lineHeight: 18 },
+    popupBtns: { marginTop: 12, gap: 10 },
+    popupBtn: { height: 46, borderRadius: 16, alignItems: "center", justifyContent: "center", borderWidth: 1 },
+    popupBtnPrimary: { backgroundColor: theme.popupPrimaryBg, borderColor: theme.popupPrimaryBorder },
+    popupBtnSecondary: { backgroundColor: theme.popupSecondaryBg, borderColor: theme.popupSecondaryBorder },
+    popupBtnText: { fontSize: 13, fontWeight: "900" },
+    popupBtnTextPrimary: { color: theme.popupPrimaryText },
+    popupBtnTextSecondary: { color: theme.popupSecondaryText },
+    popupStickerRow: { marginTop: 10, flexDirection: "row", justifyContent: "center", gap: 10 },
+    popupSticker: { fontSize: 16 }
+  });
+}
+
+const DARK_MAP_STYLE = [
+  { elementType: "geometry", stylers: [{ color: "#1d2c4d" }] },
+  { elementType: "labels.text.fill", stylers: [{ color: "#8ec3b9" }] },
+  { elementType: "labels.text.stroke", stylers: [{ color: "#1a3646" }] },
+  { featureType: "administrative.country", elementType: "geometry.stroke", stylers: [{ color: "#4b6878" }] },
+  { featureType: "administrative.land_parcel", elementType: "labels.text.fill", stylers: [{ color: "#64779e" }] },
+  { featureType: "administrative.province", elementType: "geometry.stroke", stylers: [{ color: "#4b6878" }] },
+  { featureType: "landscape.man_made", elementType: "geometry.stroke", stylers: [{ color: "#334e87" }] },
+  { featureType: "landscape.natural", elementType: "geometry", stylers: [{ color: "#023e58" }] },
+  { featureType: "poi", elementType: "geometry", stylers: [{ color: "#283d6a" }] },
+  { featureType: "poi", elementType: "labels.text.fill", stylers: [{ color: "#6f9ba5" }] },
+  { featureType: "poi", elementType: "labels.text.stroke", stylers: [{ color: "#1d2c4d" }] },
+  { featureType: "poi.park", elementType: "geometry.fill", stylers: [{ color: "#023e58" }] },
+  { featureType: "poi.park", elementType: "labels.text.fill", stylers: [{ color: "#3C7680" }] },
+  { featureType: "road", elementType: "geometry", stylers: [{ color: "#304a7d" }] },
+  { featureType: "road", elementType: "labels.text.fill", stylers: [{ color: "#98a5be" }] },
+  { featureType: "road", elementType: "labels.text.stroke", stylers: [{ color: "#1d2c4d" }] },
+  { featureType: "road.highway", elementType: "geometry", stylers: [{ color: "#2c6675" }] },
+  { featureType: "road.highway", elementType: "geometry.stroke", stylers: [{ color: "#255763" }] },
+  { featureType: "road.highway", elementType: "labels.text.fill", stylers: [{ color: "#b0d5ce" }] },
+  { featureType: "road.highway", elementType: "labels.text.stroke", stylers: [{ color: "#023e58" }] },
+  { featureType: "transit", elementType: "labels.text.fill", stylers: [{ color: "#98a5be" }] },
+  { featureType: "transit", elementType: "labels.text.stroke", stylers: [{ color: "#1d2c4d" }] },
+  { featureType: "transit.line", elementType: "geometry.fill", stylers: [{ color: "#283d6a" }] },
+  { featureType: "transit.station", elementType: "geometry", stylers: [{ color: "#3a4762" }] },
+  { featureType: "water", elementType: "geometry", stylers: [{ color: "#0e1626" }] },
+  { featureType: "water", elementType: "labels.text.fill", stylers: [{ color: "#4e6d70" }] }
+];

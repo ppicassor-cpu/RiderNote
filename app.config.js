@@ -6,7 +6,7 @@ module.exports = ({ config }) => {
   const pkg = (expo.android && expo.android.package) ? expo.android.package : "com.ridermemotracker";
 
   const plugins = Array.isArray(expo.plugins) ? expo.plugins.slice() : [];
-  const p = "./plugins/withRiderTrackerFixed";
+  const p = "./plugins/withRiderTracker";
   if (!plugins.includes(p)) plugins.push(p);
 
   return {
