@@ -15,6 +15,8 @@ const {
 // 1. Constants & Configuration
 // ------------------------------------------------------------------
 const PLAY_SERVICES_LOCATION = "com.google.android.gms:play-services-location:21.3.0";
+const PLAY_APP_UPDATE = "com.google.android.play:app-update:2.1.0";
+const PLAY_APP_UPDATE_KTX = "com.google.android.play:app-update-ktx:2.1.0";
 const IGNORE_ASSETS_PATTERN = "!.svn:!.git:!.ds_store:!*.scc:!CVS:!thumbs.db:!picasa.ini:!*~";
 
 const PERMS = [
@@ -48,8 +50,8 @@ function withRiderTracker(config) {
 async function generateJavaFilesMod(config) {
   const pkg = safeGetPackage(config);
   const androidRoot = config.modRequest.platformProjectRoot;
-  const javaDir = path.join(androidRoot, "app", "src", "main", "java", ...pkg.split("."), "tracker");
 
+  const javaDir = path.join(androidRoot, "app", "src", "main", "java", ...pkg.split("."), "tracker");
   ensureDir(javaDir);
   const files = getJavaTemplates(pkg);
 
@@ -69,6 +71,17 @@ async function generateJavaFilesMod(config) {
   writeFileIfChanged(path.join(javaDir, "TrackingService.kt"), files.TrackingService);
   writeFileIfChanged(path.join(javaDir, "TrackerModule.kt"), files.TrackerModule);
   writeFileIfChanged(path.join(javaDir, "TrackerPackage.kt"), files.TrackerPackage);
+
+  // ✅ RiderInAppUpdate 네이티브 모듈 생성
+  const updateDir = path.join(androidRoot, "app", "src", "main", "java", ...pkg.split("."), "update");
+  ensureDir(updateDir);
+  const up = getInAppUpdateTemplates(pkg);
+
+  deleteIfExists(path.join(updateDir, "RiderInAppUpdateModule.java"));
+  deleteIfExists(path.join(updateDir, "RiderInAppUpdatePackage.java"));
+
+  writeFileIfChanged(path.join(updateDir, "RiderInAppUpdateModule.kt"), up.RiderInAppUpdateModule);
+  writeFileIfChanged(path.join(updateDir, "RiderInAppUpdatePackage.kt"), up.RiderInAppUpdatePackage);
 
   return config;
 }
@@ -104,6 +117,7 @@ function updateBuildGradleMod(config) {
 
   // 1. 의존성 추가
   src = addDependencyIfMissing(src);
+  src = addInAppUpdateDependenciesIfMissing(src);
 
   // 2. ignoreAssetsPattern 처리
   src = ensureIgnoreAssetsPattern(src);
@@ -120,13 +134,117 @@ function updateBuildGradleMod(config) {
 /** 4) MainApplication 패키지 등록 */
 function updateMainApplicationMod(config) {
   const pkg = safeGetPackage(config);
-  config.modResults.contents = ensureImportAndRegisterInMainApplication(config.modResults.contents, pkg);
+
+  let src = config.modResults.contents;
+  src = ensureImportAndRegisterInMainApplication(src, pkg);
+  src = ensureImportAndRegisterInMainApplication_InAppUpdate(src, pkg);
+
+  config.modResults.contents = src;
   return config;
 }
+function ensureImportAndRegisterInMainApplication_InAppUpdate(src, pkg) {
+  const importKt = `import ${pkg}.update.RiderInAppUpdatePackage`;
+  const importJava = `import ${pkg}.update.RiderInAppUpdatePackage;`;
+  const isJava = /(^\s*package\s+[a-zA-Z0-9_.]+\s*;\s*$)/m.test(src);
 
+  // 1) import 추가
+  if (src.includes("class MainApplication") || src.includes("MainApplication")) {
+    if (isJava) {
+      if (!src.includes(importJava)) {
+        src = src.replace(/(^\s*package\s+[a-zA-Z0-9_.]+\s*;\s*$)/m, `$1\n${importJava}`);
+      }
+    } else {
+      if (!src.includes(importKt)) {
+        src = src.replace(/(^\s*package\s+[a-zA-Z0-9_.]+\s*$)/m, `$1\n${importKt}`);
+      }
+    }
+  }
+
+  // 이미 등록돼 있으면 종료
+  if (src.includes("RiderInAppUpdatePackage()") || src.includes("new RiderInAppUpdatePackage()")) return src;
+
+  // 2) Kotlin(MainApplication.kt) 패턴들 처리
+  if (!isJava) {
+    // (a) 이미 Tracker가 return을 toMutableList().apply { ... } 형태로 바꿔둔 케이스 포함
+    if (/PackageList\(this\)\.packages\.toMutableList\(\)\.apply\s*\{\s*/m.test(src)) {
+      src = src.replace(
+        /PackageList\(this\)\.packages\.toMutableList\(\)\.apply\s*\{\s*/m,
+        (m) => `${m}\n      add(RiderInAppUpdatePackage())\n      `
+      );
+      return src;
+    }
+
+    // (b) packages.apply { ... } 케이스
+    if (src.includes("PackageList(this).packages.apply")) {
+      src = src.replace(
+        /PackageList\(this\)\.packages\.apply\s*\{/m,
+        "PackageList(this).packages.apply {\n      add(RiderInAppUpdatePackage())"
+      );
+      return src;
+    }
+
+    // (c) return PackageList(this).packages 케이스
+    if (/return\s+PackageList\(this\)\.packages\b/m.test(src)) {
+      src = src.replace(
+        /return\s+PackageList\(this\)\.packages\b/m,
+        "return PackageList(this).packages.toMutableList().apply { add(RiderInAppUpdatePackage()) }"
+      );
+      return src;
+    }
+
+    // (d) val packages = PackageList(this).packages 케이스
+    if (/val\s+packages\s*=\s*PackageList\(this\)\.packages\b/m.test(src)) {
+      src = src.replace(
+        /val\s+packages\s*=\s*PackageList\(this\)\.packages\b/m,
+        "val packages = PackageList(this).packages.toMutableList()"
+      );
+
+      if (!src.includes("packages.add(RiderInAppUpdatePackage())")) {
+        src = src.replace(
+          /(val packages = PackageList\(this\)\.packages\.toMutableList\(\)\s*\n)/,
+          `$1    packages.add(RiderInAppUpdatePackage())\n`
+        );
+      }
+      return src;
+    }
+
+    // (e) 마지막 fallback: PackageList(this).packages 단독 사용 케이스
+    if (src.includes("PackageList(this).packages") && !src.includes(".toMutableList()")) {
+      src = src.replace(
+        "PackageList(this).packages",
+        "PackageList(this).packages.toMutableList().apply { add(RiderInAppUpdatePackage()) }"
+      );
+      return src;
+    }
+
+    return src;
+  }
+
+  // 3) Java(MainApplication.java) 패턴 처리
+  if (src.includes("new PackageList(this).getPackages()") && !src.includes("new RiderInAppUpdatePackage()")) {
+    src = src.replace(
+      /List<ReactPackage>\s+packages\s*=\s*new\s+PackageList\(this\)\.getPackages\(\)\s*;/m,
+      (m) => `${m}\n    packages.add(new RiderInAppUpdatePackage());`
+    );
+    return src;
+  }
+
+  return src;
+}
 // ------------------------------------------------------------------
 // 4. Utilities
 // ------------------------------------------------------------------
+
+function addInAppUpdateDependenciesIfMissing(src) {
+  if (src.includes("com.google.android.play:app-update")) return src;
+
+  const depLines = [
+    `    implementation "${PLAY_APP_UPDATE}"`,
+    `    implementation "${PLAY_APP_UPDATE_KTX}"`
+  ].join("\n");
+
+  return src.replace(/dependencies\s*\{\s*/m, (m) => `${m}\n${depLines}\n`);
+}
 
 function ensureDir(p) {
   fs.mkdirSync(p, { recursive: true });
@@ -335,6 +453,163 @@ function reindentBlock(block, indent) {
 // ------------------------------------------------------------------
 // 5. Kotlin Templates (Native 저장: 앱 전환 없음)
 // ------------------------------------------------------------------
+function getInAppUpdateTemplates(pkg) {
+  const P = pkg;
+
+const RiderInAppUpdateModule = `package ${P}.update
+
+import android.app.Activity
+import android.content.Intent
+import android.net.Uri
+import com.facebook.react.bridge.Arguments
+import com.facebook.react.bridge.BaseActivityEventListener
+import com.facebook.react.bridge.Promise
+import com.facebook.react.bridge.ReactApplicationContext
+import com.facebook.react.bridge.ReactContextBaseJavaModule
+import com.facebook.react.bridge.ReactMethod
+import com.google.android.play.core.appupdate.AppUpdateManager
+import com.google.android.play.core.appupdate.AppUpdateManagerFactory
+import com.google.android.play.core.appupdate.AppUpdateOptions
+import com.google.android.play.core.install.model.AppUpdateType
+import com.google.android.play.core.install.model.UpdateAvailability
+
+class RiderInAppUpdateModule(private val reactContext: ReactApplicationContext) : ReactContextBaseJavaModule(reactContext) {
+
+  companion object {
+    private const val REQ_CODE = 9237
+  }
+
+  private val appUpdateManager: AppUpdateManager = AppUpdateManagerFactory.create(reactContext)
+  private var pendingPromise: Promise? = null
+
+  private val listener = object : BaseActivityEventListener() {
+    override fun onActivityResult(activity: Activity, requestCode: Int, resultCode: Int, data: Intent?) {
+      if (requestCode != REQ_CODE) return
+      val p = pendingPromise ?: return
+      pendingPromise = null
+      // Activity.RESULT_OK / Activity.RESULT_CANCELED 등
+      p.resolve(resultCode)
+    }
+  }
+
+  init {
+    reactContext.addActivityEventListener(listener)
+  }
+
+  override fun getName(): String = "RiderInAppUpdate"
+
+  @ReactMethod
+  fun check(promise: Promise) {
+    try {
+      val task = appUpdateManager.appUpdateInfo
+      task.addOnSuccessListener { info ->
+        val out = Arguments.createMap()
+        out.putInt("availability", info.updateAvailability())
+        out.putBoolean("immediateAllowed", info.isUpdateTypeAllowed(AppUpdateType.IMMEDIATE))
+        out.putBoolean("flexibleAllowed", info.isUpdateTypeAllowed(AppUpdateType.FLEXIBLE))
+        out.putInt("availableVersionCode", info.availableVersionCode())
+        val staleness = info.clientVersionStalenessDays()
+        if (staleness != null) out.putInt("stalenessDays", staleness) else out.putNull("stalenessDays")
+        out.putInt("updatePriority", info.updatePriority())
+        promise.resolve(out)
+      }.addOnFailureListener { e ->
+        promise.reject("ERR_CHECK", e)
+      }
+    } catch (e: Exception) {
+      promise.reject("ERR_CHECK", e)
+    }
+  }
+
+  @ReactMethod
+  fun startImmediate(promise: Promise) {
+    val activity = reactContext.currentActivity
+    if (activity == null) {
+      promise.reject("NO_ACTIVITY", "No currentActivity")
+      return
+    }
+    if (pendingPromise != null) {
+      promise.reject("BUSY", "Update flow already running")
+      return
+    }
+
+    try {
+      appUpdateManager.appUpdateInfo
+        .addOnSuccessListener { info ->
+          val availability = info.updateAvailability()
+          val canImmediate = info.isUpdateTypeAllowed(AppUpdateType.IMMEDIATE)
+
+          val okToStart =
+            (availability == UpdateAvailability.UPDATE_AVAILABLE || availability == UpdateAvailability.DEVELOPER_TRIGGERED_UPDATE_IN_PROGRESS) &&
+              canImmediate
+
+          if (!okToStart) {
+            // 시작할 업데이트 없음
+            promise.resolve(-1)
+            return@addOnSuccessListener
+          }
+
+          pendingPromise = promise
+          try {
+            val opts = AppUpdateOptions.newBuilder(AppUpdateType.IMMEDIATE).build()
+            appUpdateManager.startUpdateFlowForResult(info, activity, opts, REQ_CODE)
+          } catch (e: Exception) {
+            pendingPromise = null
+            promise.reject("ERR_START", e)
+          }
+        }
+        .addOnFailureListener { e ->
+          promise.reject("ERR_START", e)
+        }
+    } catch (e: Exception) {
+      promise.reject("ERR_START", e)
+    }
+  }
+
+  @ReactMethod
+  fun openStore(promise: Promise) {
+    val c = reactContext
+    val id = c.packageName
+
+    try {
+      val i = Intent(Intent.ACTION_VIEW, Uri.parse("market://details?id=$id"))
+      i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+      c.startActivity(i)
+      promise.resolve(true)
+    } catch (_: Exception) {
+      try {
+        val i2 = Intent(Intent.ACTION_VIEW, Uri.parse("https://play.google.com/store/apps/details?id=$id"))
+        i2.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        c.startActivity(i2)
+        promise.resolve(true)
+      } catch (e2: Exception) {
+        promise.reject("ERR_STORE", e2)
+      }
+    }
+  }
+}
+`;
+
+  const RiderInAppUpdatePackage = `package ${P}.update
+
+import com.facebook.react.ReactPackage
+import com.facebook.react.bridge.NativeModule
+import com.facebook.react.bridge.ReactApplicationContext
+import com.facebook.react.uimanager.ViewManager
+import java.util.Collections
+
+class RiderInAppUpdatePackage : ReactPackage {
+  override fun createViewManagers(reactContext: ReactApplicationContext): List<ViewManager<*, *>> {
+    return Collections.emptyList()
+  }
+
+  override fun createNativeModules(reactContext: ReactApplicationContext): List<NativeModule> {
+    return listOf(RiderInAppUpdateModule(reactContext))
+  }
+}
+`;
+
+  return { RiderInAppUpdateModule, RiderInAppUpdatePackage };
+}
 
 function getJavaTemplates(pkg) {
   const P = pkg;
@@ -1317,4 +1592,4 @@ class TrackerPackage : ReactPackage {
   return { TrackerPrefs, MemoStore, TrackingService, TrackerModule, TrackerPackage };
 }
 
-module.exports = createRunOncePlugin(withRiderTracker, "withRiderTracker", "1.0.11");
+module.exports = createRunOncePlugin(withRiderTracker, "withRiderTracker", "1.0.12");

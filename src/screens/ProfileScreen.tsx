@@ -1,8 +1,8 @@
-﻿// FILE: C:\RiderNote\src\screens\ProfileScreen.tsx
-import React, { useEffect, useMemo, useState } from "react";
+﻿import React, { useEffect, useMemo, useState, useCallback } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { ScrollView, StyleSheet, Text, TouchableOpacity, View } from "react-native";
+import { BackHandler, ScrollView, StyleSheet, Text, TouchableOpacity, View, Linking, Platform, NativeModules } from "react-native";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
+import * as Updates from "expo-updates";
 
 import HelpScreen from "./HelpScreen";
 import AppInfoScreen from "./AppInfoScreen";
@@ -39,6 +39,17 @@ export default function ProfileScreen({ onClose }: Props) {
   const { theme, themePref, setThemePref } = useAppTheme();
   const styles = useMemo(() => createStyles(theme), [theme]);
 
+  const [updateBusy, setUpdateBusy] = useState(false);
+  const [updateMsg, setUpdateMsg] = useState<string>("");
+
+  useEffect(() => {
+    const sub = BackHandler.addEventListener("hardwareBackPress", () => {
+      onClose();
+      return true;
+    });
+    return () => sub.remove();
+  }, [onClose]);
+
   useEffect(() => {
     let mounted = true;
     (async () => {
@@ -54,6 +65,114 @@ export default function ProfileScreen({ onClose }: Props) {
     await setThemePref(pref);
   };
 
+  const getAndroidPackageName = useCallback((): string | null => {
+    try {
+      const m: any = (Updates as any).manifest;
+      const m2: any = (Updates as any).manifest2;
+
+      const candidates = [
+        m?.android?.package,
+        m?.android?.packageName,
+        m?.extra?.expoClient?.android?.package,
+        m?.extra?.expoClient?.android?.packageName,
+        m2?.extra?.expoClient?.android?.package,
+        m2?.extra?.expoClient?.android?.packageName
+      ];
+
+      for (const c of candidates) {
+        if (typeof c === "string" && c.trim().length > 0) return c.trim();
+      }
+    } catch {}
+    return null;
+  }, []);
+
+  const openPlayStoreFallback = useCallback(async () => {
+    const pkg = getAndroidPackageName();
+    const marketUrl = pkg ? `market://details?id=${pkg}` : "";
+    const webUrl = pkg
+      ? `https://play.google.com/store/apps/details?id=${pkg}`
+      : `https://play.google.com/store/search?q=${encodeURIComponent("RiderNote")}&c=apps`;
+
+    try {
+      if (Platform.OS === "android" && marketUrl) {
+        await Linking.openURL(marketUrl);
+        return;
+      }
+    } catch {}
+
+    try {
+      await Linking.openURL(webUrl);
+    } catch {}
+  }, [getAndroidPackageName]);
+
+  const runEasOtaUpdateIfAvailable = useCallback(async (): Promise<boolean> => {
+    try {
+      if (!Updates.isEnabled) return false;
+      setUpdateMsg("업데이트 확인 중...");
+      const res = await Updates.checkForUpdateAsync();
+      if (!res.isAvailable) return false;
+
+      setUpdateMsg("업데이트 다운로드 중...");
+      await Updates.fetchUpdateAsync();
+
+      setUpdateMsg("업데이트 적용 중...");
+      await Updates.reloadAsync();
+      return true;
+    } catch {
+      return false;
+    }
+  }, []);
+
+  const tryAndroidInAppUpdate = useCallback(async (): Promise<boolean> => {
+    if (Platform.OS !== "android") return false;
+
+    const mod: any =
+      (NativeModules as any).RiderInAppUpdate ||
+      (NativeModules as any).InAppUpdateModule ||
+      (NativeModules as any).InAppUpdatesModule;
+
+    try {
+      if (mod && typeof mod.checkAndStartUpdate === "function") {
+        setUpdateMsg("Play Store 업데이트 확인 중...");
+        const r = await mod.checkAndStartUpdate();
+        return !!r;
+      }
+
+      if (mod && typeof mod.checkNeedsUpdate === "function" && typeof mod.startUpdate === "function") {
+        setUpdateMsg("Play Store 업데이트 확인 중...");
+        const r = await mod.checkNeedsUpdate();
+        const shouldUpdate = typeof r === "boolean" ? r : !!r?.shouldUpdate;
+        if (!shouldUpdate) return false;
+
+        setUpdateMsg("업데이트 시작 중...");
+        await mod.startUpdate({ updateType: "IMMEDIATE" });
+        return true;
+      }
+    } catch {}
+
+    return false;
+  }, []);
+
+  const handleUpdatePress = useCallback(async () => {
+    if (updateBusy) return;
+
+    setUpdateBusy(true);
+    setUpdateMsg("");
+
+    try {
+      const didOta = await runEasOtaUpdateIfAvailable();
+      if (didOta) return;
+
+      const didInApp = await tryAndroidInAppUpdate();
+      if (didInApp) return;
+
+      setUpdateMsg("Play Store로 이동합니다...");
+      await openPlayStoreFallback();
+    } finally {
+      setUpdateBusy(false);
+    }
+  }, [openPlayStoreFallback, runEasOtaUpdateIfAvailable, tryAndroidInAppUpdate, updateBusy]);
+
   if (page === "help") {
     return <HelpScreen onBack={() => setPage("main")} onClose={onClose} />;
   }
@@ -67,7 +186,26 @@ export default function ProfileScreen({ onClose }: Props) {
     return <AdRemovePlanScreen onBack={() => setPage("main")} onClose={onClose} />;
   }
   if (page === "subs") {
-    return <SubscriptionManageScreen onBack={() => setPage("main")} onClose={onClose} />;
+    return (
+      <SafeAreaView style={styles.subsRoot} edges={["top", "left", "right", "bottom"]}>
+        <View style={styles.subsBody}>
+          <SubscriptionManageScreen onBack={() => setPage("main")} onClose={onClose} />
+        </View>
+
+        <View style={[styles.updateBar, { paddingBottom: insets.bottom + 14 }]}>
+          <TouchableOpacity
+            activeOpacity={0.88}
+            onPress={handleUpdatePress}
+            disabled={updateBusy}
+            style={[styles.updateBtn, updateBusy ? styles.updateBtnDisabled : null]}
+          >
+            <Text style={styles.updateBtnText}>{updateBusy ? "UPDATING..." : "UPDATE"}</Text>
+          </TouchableOpacity>
+
+          {updateMsg ? <Text style={styles.updateHint}>{updateMsg}</Text> : null}
+        </View>
+      </SafeAreaView>
+    );
   }
 
   const bottomPad = insets.bottom + 18;
@@ -182,6 +320,28 @@ function createStyles(theme: AppTheme) {
 
   return StyleSheet.create({
     root: { flex: 1, backgroundColor: theme.rootBg },
+
+    subsRoot: { flex: 1, backgroundColor: theme.rootBg },
+    subsBody: { flex: 1 },
+    updateBar: {
+      paddingHorizontal: 16,
+      paddingTop: 10,
+      backgroundColor: theme.headerBg,
+      borderTopWidth: 1,
+      borderTopColor: theme.border
+    },
+    updateBtn: {
+      height: 44,
+      borderRadius: 16,
+      alignItems: "center",
+      justifyContent: "center",
+      backgroundColor: theme.accentBg,
+      borderWidth: 1,
+      borderColor: theme.accentBorder
+    },
+    updateBtnDisabled: { opacity: 0.6 },
+    updateBtnText: { color: theme.accentText, fontSize: 13, fontWeight: "900" },
+    updateHint: { marginTop: 8, marginBottom: 2, color: theme.textMuted, fontSize: 11, lineHeight: 15, textAlign: "center" },
 
     header: {
       paddingHorizontal: 16,

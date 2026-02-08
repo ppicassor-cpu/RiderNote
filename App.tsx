@@ -502,20 +502,20 @@ function Main() {
   }, []);
 
   const cacheClipboardNow = useCallback(async () => {
-    try {
-      if (typeof (Tracker as any).cacheClipboard === "function") {
-        try {
-          await (Tracker as any).cacheClipboard();
-        } catch {}
-      }
-      const t = (await readClipboardText())?.toString?.() ?? "";
-      const text = t.trim();
-      if (!text) return;
-      if (lastClipRef.current === text) return;
-      lastClipRef.current = text;
-      await writeSavedClipboard(text);
-    } catch {}
-  }, [readClipboardText, writeSavedClipboard]);
+  try {
+    if (typeof (Tracker as any).cacheClipboard === "function") {
+      try {
+        await (Tracker as any).cacheClipboard();
+      } catch {}
+    }
+    const t = (await readClipboardText())?.toString?.() ?? "";
+    const text = t.trim();
+    if (!text) return;
+    lastClipRef.current = text;
+    await writeSavedClipboard(text);
+  } catch {}
+}, [readClipboardText, writeSavedClipboard]);
+
 
   const saveFromClipboard = useCallback(async () => {
     try {
@@ -1117,6 +1117,37 @@ function Main() {
     };
   }, [isTracking, manual.enabled, refreshMemosSilent, refreshRouteSilent, setCenterStable]);
 
+  const hideBubble = useCallback(async () => {
+    const fns = [
+      (Tracker as any).hideBubble,
+      (Tracker as any).removeBubble,
+      (Tracker as any).dismissBubble,
+      (Tracker as any).hideFloatingButton,
+      (Tracker as any).removeFloatingButton,
+      (Tracker as any).hideOverlay,
+      (Tracker as any).removeOverlay,
+      (Tracker as any).stopOverlay,
+      (Tracker as any).stopOverlayService,
+      (Tracker as any).stopBubbleService
+    ];
+    for (const fn of fns) {
+      if (typeof fn !== "function") continue;
+      try {
+        await fn();
+        continue;
+      } catch {}
+      try {
+        await fn(false);
+      } catch {}
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!isTracking) {
+      hideBubble();
+    }
+  }, [hideBubble, isTracking]);
+
   const onStart = async () => {
     try {
       const ok = await ensureAllRequired();
@@ -1147,6 +1178,7 @@ function Main() {
       setIsTracking(false);
       setSessionId(null);
       setStatus("대기");
+      await hideBubble();
 
       let memoCount = 0;
       let allMemos: MemoItem[] = [];

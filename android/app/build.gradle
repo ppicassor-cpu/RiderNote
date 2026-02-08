@@ -78,7 +78,7 @@ android {
         applicationId 'com.ridernote'
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 10
+        versionCode 11
         versionName "1.0.0"
         buildConfigField "String", "REACT_NATIVE_RELEASE_LEVEL", "\"${findProperty('reactNativeReleaseLevel') ?: 'stable'}\""
     }
@@ -145,7 +145,10 @@ android {
 }
 dependencies {
     
-    implementation "com.google.android.gms:play-services-location:21.3.0"
+    
+    implementation "com.google.android.play:app-update:2.1.0"
+    implementation "com.google.android.play:app-update-ktx:2.1.0"
+implementation "com.google.android.gms:play-services-location:21.3.0"
 // The version of react-native is set by the React Native Gradle Plugin
     implementation("com.facebook.react:react-android")
     def isGifEnabled = (findProperty('expo.gif.enabled') ?: "") == "true";

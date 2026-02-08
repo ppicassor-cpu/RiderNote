@@ -1,5 +1,6 @@
 package com.ridernote
 
+import com.ridernote.update.RiderInAppUpdatePackage
 import com.ridernote.tracker.TrackerPackage
 import android.app.Application
 import android.content.res.Configuration
@@ -24,6 +25,7 @@ class MainApplication : Application(), ReactApplication {
       object : DefaultReactNativeHost(this) {
         override fun getPackages(): List<ReactPackage> =
             PackageList(this).packages.apply {
+      add(RiderInAppUpdatePackage())
       add(TrackerPackage())
               // Packages that cannot be autolinked yet can be added manually here, for example:
               // add(MyReactNativePackage())
