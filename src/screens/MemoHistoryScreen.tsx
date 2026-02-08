@@ -1,7 +1,7 @@
 // FILE: C:\RiderNote\src\screens\MemoHistoryScreen.tsx
 import React, { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { Platform, StatusBar, StyleSheet, Text, TouchableOpacity, View, FlatList } from "react-native";
+import { BackHandler, Platform, StatusBar, StyleSheet, Text, TouchableOpacity, View, FlatList } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import MapView, { Marker, Polyline, PROVIDER_GOOGLE } from "react-native-maps";
 import type { RoutePoint } from "../components/GoogleMap";
@@ -305,6 +305,20 @@ export default function MemoHistoryScreen({ memos, route, sessionId, onClose }: 
   const FlatListAny = FlatList as any;
 
   const SESSION_SLOTS_KEY = "session_slots_v1";
+  const MEMO_TEXT_OVERRIDES_KEY = "memo_text_overrides_v1";
+
+  const [memoOverrides, setMemoOverrides] = useState<Record<string, string>>({});
+
+  const loadMemoOverrides = useCallback(async () => {
+    try {
+      const s = await AsyncStorage.getItem(MEMO_TEXT_OVERRIDES_KEY);
+      const v = s ? JSON.parse(s) : {};
+      if (v && typeof v === "object") setMemoOverrides(v);
+      else setMemoOverrides({});
+    } catch {
+      setMemoOverrides({});
+    }
+  }, []);
 
   const [slotsLoaded, setSlotsLoaded] = useState(false);
   const [slotsMode, setSlotsMode] = useState(false);
@@ -326,6 +340,17 @@ export default function MemoHistoryScreen({ memos, route, sessionId, onClose }: 
     const btns: PopupButton[] = buttons?.length ? buttons : [{ text: "확인", variant: "primary", onPress: closePopup }];
     setPopup({ visible: true, title, message, buttons: btns });
   }, [closePopup]);
+
+  useEffect(() => {
+    if (Platform.OS !== "android") return;
+
+    const sub = BackHandler.addEventListener("hardwareBackPress", () => {
+      onClose();
+      return true;
+    });
+
+    return () => sub.remove();
+  }, [onClose]);
 
   const persistSlots = useCallback(
     async (s1: SlotData | null, s2: SlotData | null, s3: SlotData | null) => {
@@ -377,11 +402,12 @@ export default function MemoHistoryScreen({ memos, route, sessionId, onClose }: 
     (async () => {
       if (!mounted) return;
       await loadSlots();
+      await loadMemoOverrides();
     })();
     return () => {
       mounted = false;
     };
-  }, [loadSlots]);
+  }, [loadSlots, loadMemoOverrides]);
 
   const currentSlotData = useMemo(() => {
     if (!slotsLoaded) return null;
@@ -392,10 +418,22 @@ export default function MemoHistoryScreen({ memos, route, sessionId, onClose }: 
   }, [slotsLoaded, hasAnySlots, selectedSlot, slot1, slot2, slot3]);
 
   const memosSource: MemoItem[] = useMemo(() => {
-    if (currentSlotData?.memos) return currentSlotData.memos;
-    if (slotsLoaded && slotsMode) return [];
-    return memos || [];
-  }, [currentSlotData, slotsLoaded, slotsMode, memos]);
+    const base = currentSlotData?.memos ? currentSlotData.memos : slotsLoaded && slotsMode ? [] : memos || [];
+    const ov = memoOverrides;
+
+    if (!ov || typeof ov !== "object") return base;
+
+    return (base || []).map((m: any) => {
+      const t = typeof (m as any)?.savedAt === "number" ? (m as any).savedAt : null;
+      if (t === null) return m;
+
+      const key = String(t);
+      const nextText = (ov as any)[key];
+      if (typeof nextText !== "string") return m;
+
+      return { ...(m as any), text: nextText };
+    });
+  }, [currentSlotData, slotsLoaded, slotsMode, memos, memoOverrides]);
 
   const routeSource: RoutePoint[] = useMemo(() => {
     if (currentSlotData?.route) return currentSlotData.route;

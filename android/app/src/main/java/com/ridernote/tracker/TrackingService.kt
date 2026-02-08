@@ -60,6 +60,7 @@ class TrackingService : Service() {
 
   private var bubble: View? = null
   private var bubbleLp: WindowManager.LayoutParams? = null
+  private var bubbleBg: GradientDrawable? = null
 
   private var memoPanel: View? = null
   private var memoPanelLp: WindowManager.LayoutParams? = null
@@ -203,6 +204,7 @@ class TrackingService : Service() {
     bg.cornerRadius = dp(22).toFloat()
     bg.setStroke(dp(1), 0x332FB7A3)
     tv.background = bg
+    bubbleBg = bg
     tv.setTextColor(0xFF0B1220.toInt())
 
     root.addView(tv, FrameLayout.LayoutParams(
@@ -367,6 +369,7 @@ class TrackingService : Service() {
     }
     bubble = null
     bubbleLp = null
+    bubbleBg = null
     hideMemoPanel()
   }
 
@@ -440,7 +443,24 @@ class TrackingService : Service() {
       if (t.isEmpty()) {
         Toast.makeText(this, "텍스트 없음", Toast.LENGTH_SHORT).show()
       } else {
+
+        try {
+          val arr = MemoStore.getMemos(this)
+          var i = 0
+          while (i < arr.length()) {
+            val o = arr.optJSONObject(i)
+            val prev = ((o?.optString("text", "")) ?: "").trim()
+            if (prev == t) {
+              bubbleBg?.setColor(0x99FF3B30.toInt())
+              Toast.makeText(this, "클립보드 복사를 잊으신거 같아요.", Toast.LENGTH_SHORT).show()
+              return@setOnClickListener
+            }
+            i++
+          }
+        } catch (_: Exception) {}
+
         saveMemoNative(t)
+        bubbleBg?.setColor(0x99EFF7FF.toInt())
         Toast.makeText(this, "메모 저장됨", Toast.LENGTH_SHORT).show()
         input.setText("")
         hideMemoPanel()
@@ -538,7 +558,24 @@ class TrackingService : Service() {
       Toast.makeText(this, "클립보드 텍스트 없음", Toast.LENGTH_SHORT).show()
       return
     }
+
+    try {
+      val arr = MemoStore.getMemos(this)
+      var i = 0
+      while (i < arr.length()) {
+        val o = arr.optJSONObject(i)
+        val prev = ((o?.optString("text", "")) ?: "").trim()
+        if (prev == t) {
+          bubbleBg?.setColor(0x99FF3B30.toInt())
+          Toast.makeText(this, "클립보드 복사를 잊으신거 같아요.", Toast.LENGTH_SHORT).show()
+          return
+        }
+        i++
+      }
+    } catch (_: Exception) {}
+
     saveMemoNative(t)
+    bubbleBg?.setColor(0x99EFF7FF.toInt())
     Toast.makeText(this, "메모 저장됨", Toast.LENGTH_SHORT).show()
   }
 

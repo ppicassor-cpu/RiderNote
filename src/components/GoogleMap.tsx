@@ -183,6 +183,72 @@ export default function GoogleMap({
       .map((p) => ({ latitude: p.lat, longitude: p.lng }));
   }, [route]);
 
+  const routeSegments = useMemo(() => {
+    const pts = (route || [])
+      .filter((p) => typeof p?.lat === "number" && typeof p?.lng === "number")
+      .map((p) => ({
+        lat: p.lat as number,
+        lng: p.lng as number,
+        t: typeof (p as any)?.t === "number" ? ((p as any).t as number) : undefined
+      }));
+
+    if (pts.length < 2) return [];
+
+    const baseR = 123;
+    const baseG = 228;
+    const baseB = 241;
+
+    const alphaStart = 0.25;
+    const alphaEnd = 0.85;
+
+    const hasTime = pts.some((p) => typeof p.t === "number" && Number.isFinite(p.t));
+    let minT = Infinity;
+    let maxT = -Infinity;
+
+    if (hasTime) {
+      for (const p of pts) {
+        const tt = p.t;
+        if (typeof tt === "number" && Number.isFinite(tt)) {
+          if (tt < minT) minT = tt;
+          if (tt > maxT) maxT = tt;
+        }
+      }
+      if (!Number.isFinite(minT) || !Number.isFinite(maxT) || maxT <= minT) {
+        minT = 0;
+        maxT = 0;
+      }
+    }
+
+    const segs: { coords: LatLng[]; color: string }[] = [];
+    const denomIdx = Math.max(1, pts.length - 2);
+
+    for (let i = 0; i < pts.length - 1; i++) {
+      const a = pts[i];
+      const b = pts[i + 1];
+
+      let ratio = 0;
+      if (hasTime && typeof b.t === "number" && Number.isFinite(b.t) && maxT > minT) {
+        ratio = (b.t - minT) / (maxT - minT);
+      } else {
+        ratio = i / denomIdx;
+      }
+
+      ratio = Math.max(0, Math.min(1, ratio));
+      const alpha = alphaStart + (alphaEnd - alphaStart) * ratio;
+      const color = `rgba(${baseR}, ${baseG}, ${baseB}, ${alpha.toFixed(3)})`;
+
+      segs.push({
+        coords: [
+          { latitude: a.lat, longitude: a.lng },
+          { latitude: b.lat, longitude: b.lng }
+        ],
+        color
+      });
+    }
+
+    return segs;
+  }, [route]);
+
   const pins: MemoPin[] = useMemo(() => {
     const p = memoPins || [];
     return p.filter((x) => x && typeof x.lat === "number" && typeof x.lng === "number" && typeof x.id === "string");
@@ -443,13 +509,9 @@ export default function GoogleMap({
           if (selectedPin) updateBubblePosition(selectedPin);
         }}
       >
-        {routeCoords.length >= 2 && (
-          <Polyline
-            coordinates={routeCoords}
-            strokeWidth={3}
-            strokeColor="rgba(123, 228, 241, 0.85)"
-          />
-       )}
+        {routeSegments.map((seg, i) => (
+          <Polyline key={`route_seg_${i}`} coordinates={seg.coords} strokeWidth={3} strokeColor={seg.color} />
+        ))}
 
         {pins.map((pin) => (
           <Marker key={pin.id} coordinate={{ latitude: pin.lat, longitude: pin.lng }} onPress={() => handlePressPin(pin)} />

@@ -4,6 +4,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import {
   AppState,
   AppStateStatus,
+  BackHandler,
   Linking,
   PermissionsAndroid,
   Platform,
@@ -722,6 +723,42 @@ function Main() {
     },
     [refreshManual, refreshMemosSilent, refreshRouteSilent, openPopup]
   );
+
+  useEffect(() => {
+    if (Platform.OS !== "android") return;
+
+    const onBackPress = () => {
+      if (popup.visible) {
+        closePopup();
+        return true;
+      }
+
+      if (historyVisible) {
+        setHistoryVisible(false);
+        (async () => {
+          try {
+            const slots = await readSessionSlots();
+            setHomeSlot1(slots.slot1);
+          } catch {}
+          await refreshAll();
+        })();
+        return true;
+      }
+
+      if (profileVisible) {
+        return false;
+      }
+
+      openPopup("종료하시겠습니까?", "앱을 종료할까요?", [
+        { text: "취소", variant: "secondary" },
+        { text: "종료", variant: "primary", onPress: () => BackHandler.exitApp() }
+      ]);
+      return true;
+    };
+
+    const sub = BackHandler.addEventListener("hardwareBackPress", onBackPress);
+    return () => sub.remove();
+  }, [closePopup, historyVisible, openPopup, popup.visible, profileVisible, readSessionSlots, refreshAll]);
 
   const handleDeleteMemoPin = useCallback(
     async (pin: MemoPin) => {
