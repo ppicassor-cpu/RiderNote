@@ -15,7 +15,7 @@
     },
     "android": {
       "package": "com.ridernote",
-      "versionCode": 11, 
+      "versionCode": 12, 
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#ffffff"
@@ -34,7 +34,14 @@
     "plugins": [
       "./plugins/withEdgeToEdgeOff",
       "./plugins/withRiderTracker",
-      "./withAndroidSigning.js"
+      "./withAndroidSigning.js",
+      [
+        "react-native-google-mobile-ads",
+        {
+          "androidAppId": "ca-app-pub-5144004139813427~2657280749",
+          "iosAppId": "ca-app-pub-3940256099942544~1458002511"
+        }
+      ]
     ],
     "updates": {
       "enabled": true,

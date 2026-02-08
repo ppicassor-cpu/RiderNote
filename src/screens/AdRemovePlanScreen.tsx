@@ -1,5 +1,6 @@
 ﻿// FILE: C:\RiderNote\src\screens\AdRemovePlanScreen.tsx
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import Purchases from "react-native-purchases";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
@@ -23,9 +24,11 @@ type Props = {
 };
 
 const PREMIUM_CACHE_KEY = "RIDERNOTE_IS_PREMIUM";
+const REVCAT_ENTITLEMENT_ID = "RiderNote Premium";
 
 type FakePackage = {
   priceString: string;
+  rcPackage?: any;
 };
 
 export default function AdRemovePlanScreen({ onBack, onClose }: Props) {
@@ -82,7 +85,39 @@ export default function AdRemovePlanScreen({ onBack, onClose }: Props) {
         const cached = await AsyncStorage.getItem(PREMIUM_CACHE_KEY);
         const active = cached === "1";
         if (mounted) setIsPremium(active);
+      } catch {}
+
+      try {
+        const offerings: any = await (Purchases as any).getOfferings?.();
+        const current = offerings?.current;
+        let monthly: any = current?.monthly;
+
+        if (!monthly && Array.isArray(current?.availablePackages)) {
+          monthly =
+            current.availablePackages.find((p: any) => p?.packageType === "MONTHLY") ||
+            current.availablePackages.find((p: any) => String(p?.identifier ?? "").toLowerCase().includes("month")) ||
+            current.availablePackages[0];
+        }
+
+        const priceString = monthly?.product?.priceString ?? monthly?.product?.price_string;
+        if (mounted) setPkg(monthly ? { priceString: String(priceString ?? "₩2,900"), rcPackage: monthly } : { priceString: "₩2,900" });
+      } catch {
         if (mounted) setPkg({ priceString: "₩2,900" });
+      }
+
+      try {
+        const info: any = await (Purchases as any).getCustomerInfo?.();
+        const ent = info?.entitlements?.active?.[REVCAT_ENTITLEMENT_ID];
+        const periodType = (ent as any)?.periodType;
+        const trial = periodType === "TRIAL";
+        const active = !!ent;
+        const premiumActive = active && !trial;
+
+        if (mounted) setIsPremium(premiumActive);
+
+        try {
+          await AsyncStorage.setItem(PREMIUM_CACHE_KEY, premiumActive ? "1" : "0");
+        } catch {}
       } catch {
       } finally {
         if (mounted) setIsInitializing(false);
@@ -107,16 +142,30 @@ export default function AdRemovePlanScreen({ onBack, onClose }: Props) {
       showAlert("알림", "이미 프리미엄 상태입니다.");
       return;
     }
-    if (!pkg) {
+    if (!pkg || !pkg.rcPackage) {
       showAlert("알림", "상품 정보를 불러오는 중입니다.");
       return;
     }
 
     setIsBusy(true);
     try {
-      setIsPremium(true);
-      await saveCache(true);
-      showAlert("구매 완료", "프리미엄이 활성화되었습니다.");
+      const res: any = await (Purchases as any).purchasePackage(pkg.rcPackage);
+      const info = res?.customerInfo ?? res;
+
+      const ent = info?.entitlements?.active?.[REVCAT_ENTITLEMENT_ID];
+      const periodType = (ent as any)?.periodType;
+      const trial = periodType === "TRIAL";
+      const active = !!ent;
+      const premiumActive = active && !trial;
+
+      setIsPremium(premiumActive);
+      await saveCache(premiumActive);
+
+      if (premiumActive) {
+        showAlert("구매 완료", "프리미엄이 활성화되었습니다.");
+      } else {
+        showAlert("오류", "구매 처리 중 오류가 발생했습니다.");
+      }
     } catch {
       showAlert("오류", "구매 처리 중 오류가 발생했습니다.");
     } finally {
@@ -128,12 +177,17 @@ export default function AdRemovePlanScreen({ onBack, onClose }: Props) {
     if (isBusy) return;
     setIsBusy(true);
     try {
-      const cached = await AsyncStorage.getItem(PREMIUM_CACHE_KEY);
-      const active = cached === "1";
-      setIsPremium(active);
-      await saveCache(active);
+      const info: any = await (Purchases as any).restorePurchases?.();
+      const ent = info?.entitlements?.active?.[REVCAT_ENTITLEMENT_ID];
+      const periodType = (ent as any)?.periodType;
+      const trial = periodType === "TRIAL";
+      const active = !!ent;
+      const premiumActive = active && !trial;
 
-      if (active) {
+      setIsPremium(premiumActive);
+      await saveCache(premiumActive);
+
+      if (premiumActive) {
         showAlert("복원 완료", "프리미엄 상태가 복원되었습니다.");
       } else {
         showAlert("알림", "복원할 구매내역이 없습니다.");
@@ -147,6 +201,12 @@ export default function AdRemovePlanScreen({ onBack, onClose }: Props) {
 
   const openStoreSubscription = async () => {
     try {
+      const rc = (Purchases as any).showManageSubscriptions;
+      if (typeof rc === "function") {
+        await rc();
+        return;
+      }
+
       const url =
         Platform.OS === "android"
           ? "https://play.google.com/store/account/subscriptions"
@@ -187,7 +247,7 @@ export default function AdRemovePlanScreen({ onBack, onClose }: Props) {
               <TouchableOpacity
                 style={styles.quickBuyBtn}
                 onPress={handlePurchase}
-                disabled={isBusy || !pkg}
+                disabled={isBusy || !pkg || !pkg.rcPackage}
                 activeOpacity={0.85}
               >
                 <Text style={styles.quickBuyTxt}>빠른 구매</Text>
@@ -235,8 +295,8 @@ export default function AdRemovePlanScreen({ onBack, onClose }: Props) {
           <TouchableOpacity
             activeOpacity={0.85}
             onPress={handlePurchase}
-            style={[styles.primaryBtn, (isBusy || isPremium || !pkg) && styles.btnDisabled]}
-            disabled={isBusy || isPremium || !pkg}
+            style={[styles.primaryBtn, (isBusy || isPremium || !pkg || !pkg.rcPackage) && styles.btnDisabled]}
+            disabled={isBusy || isPremium || !pkg || !pkg.rcPackage}
           >
             {isBusy ? (
               <ActivityIndicator color={ACCENT} size="small" />

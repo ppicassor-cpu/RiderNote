@@ -758,7 +758,14 @@ class TrackingService : Service() {
         val loc = locationResult.lastLocation ?: return
 
         val sp = TrackerPrefs.sp(this@TrackingService)
-        val sessionId = sp.getString(TrackerPrefs.KEY_ACTIVE_SESSION, null) ?: return
+        val sessionId = sp.getString(TrackerPrefs.KEY_ACTIVE_SESSION, null)
+        if (sessionId == null || sessionId.trim().isEmpty()) {
+          hideBubble()
+          stopUpdates()
+          try { stopForeground(true) } catch (_: Exception) {}
+          stopSelf()
+          return
+        }
 
         val now = System.currentTimeMillis()
 
@@ -867,7 +874,17 @@ class TrackingService : Service() {
     else Settings.canDrawOverlays(this)
   }
 
+  private fun hasActiveSession(): Boolean {
+    return try {
+      val sid = TrackerPrefs.sp(this).getString(TrackerPrefs.KEY_ACTIVE_SESSION, null)
+      sid != null && sid.trim().isNotEmpty()
+    } catch (_: Exception) {
+      false
+    }
+  }
+
   private fun showBubble() {
+    if (!hasActiveSession()) return
     if (bubble != null) return
     val w = wm ?: return
     if (!canDrawOverlay()) return
@@ -1288,24 +1305,37 @@ class TrackingService : Service() {
   }
 
   override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-    if (intent == null) return START_STICKY
-    val action = intent.action ?: return START_STICKY
+    val hasSession = hasActiveSession()
+
+    if (intent == null) {
+      hideBubble()
+      stopUpdates()
+      try { stopForeground(true) } catch (_: Exception) {}
+      stopSelf()
+      return START_NOT_STICKY
+    }
+
+    val action = intent.action
+    if (action == null) {
+      if (!hasSession) hideBubble()
+      return START_NOT_STICKY
+    }
 
     if (ACTION_START == action) {
       startForegroundSafe("기록 중")
       startUpdates()
-      showBubble()
-      return START_STICKY
+      if (hasSession) showBubble() else hideBubble()
+      return START_NOT_STICKY
     }
 
     if (ACTION_OVERLAY_SHOW == action) {
-      showBubble()
-      return START_STICKY
+      if (hasSession) showBubble() else hideBubble()
+      return START_NOT_STICKY
     }
 
     if (ACTION_OVERLAY_HIDE == action) {
       hideBubble()
-      return START_STICKY
+      return START_NOT_STICKY
     }
 
     if (ACTION_STOP == action) {
@@ -1316,7 +1346,16 @@ class TrackingService : Service() {
       return START_NOT_STICKY
     }
 
-    return START_STICKY
+    if (!hasSession) hideBubble()
+    return START_NOT_STICKY
+  }
+
+  override fun onTaskRemoved(rootIntent: Intent?) {
+    hideBubble()
+    stopUpdates()
+    try { stopForeground(true) } catch (_: Exception) {}
+    stopSelf()
+    super.onTaskRemoved(rootIntent)
   }
 
   override fun onDestroy() {

@@ -191,19 +191,6 @@ export default function ProfileScreen({ onClose }: Props) {
         <View style={styles.subsBody}>
           <SubscriptionManageScreen onBack={() => setPage("main")} onClose={onClose} />
         </View>
-
-        <View style={[styles.updateBar, { paddingBottom: insets.bottom + 14 }]}>
-          <TouchableOpacity
-            activeOpacity={0.88}
-            onPress={handleUpdatePress}
-            disabled={updateBusy}
-            style={[styles.updateBtn, updateBusy ? styles.updateBtnDisabled : null]}
-          >
-            <Text style={styles.updateBtnText}>{updateBusy ? "UPDATING..." : "UPDATE"}</Text>
-          </TouchableOpacity>
-
-          {updateMsg ? <Text style={styles.updateHint}>{updateMsg}</Text> : null}
-        </View>
       </SafeAreaView>
     );
   }
@@ -235,7 +222,7 @@ export default function ProfileScreen({ onClose }: Props) {
               style={[styles.upgradeBtn, isPremium ? styles.upgradeBtnDisabled : null]}
               disabled={isPremium}
             >
-              <Text style={styles.upgradeBtnText}>UPGRADE</Text>
+              <Text style={styles.upgradeBtnText}>Buy Now</Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -288,6 +275,19 @@ export default function ProfileScreen({ onClose }: Props) {
           <MenuRow title="약관 및 개인정보처리방침" onPress={() => setPage("terms")} styles={styles} />
           <View style={styles.menuDivider} />
           <MenuRow title="구독관리" onPress={() => setPage("subs")} chevron="››" styles={styles} />
+
+          <View style={[styles.updateBar, { paddingBottom: 14 }]}>
+            <TouchableOpacity
+              activeOpacity={0.88}
+              onPress={handleUpdatePress}
+              disabled={updateBusy}
+              style={[styles.updateBtn, updateBusy ? styles.updateBtnDisabled : null]}
+            >
+              <Text style={styles.updateBtnText}>{updateBusy ? "UPDATING..." : "UPDATE"}</Text>
+            </TouchableOpacity>
+
+            {updateMsg ? <Text style={styles.updateHint}>{updateMsg}</Text> : null}
+          </View>
         </View>
       </ScrollView>
     </SafeAreaView>

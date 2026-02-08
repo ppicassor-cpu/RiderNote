@@ -34,6 +34,15 @@ import MemoHistoryScreen from "./src/screens/MemoHistoryScreen";
 import ProfileScreen from "./src/screens/ProfileScreen";
 import { ThemeProvider, useAppTheme, Theme as AppTheme } from "./src/theme/ThemeProvider";
 
+import Purchases from "react-native-purchases";
+import mobileAds, {
+  BannerAd,
+  BannerAdSize,
+  MaxAdContentRating,
+  useInterstitialAd,
+  useRewardedInterstitialAd
+} from "react-native-google-mobile-ads";
+
 // ------------------------------------------------------------------
 // 1. Types & Utilities
 // ------------------------------------------------------------------
@@ -198,10 +207,21 @@ const PermissionGate = ({
 // 3. Main Logic & Layout
 // ------------------------------------------------------------------
 
+const ADMOB_BANNER_UNIT_ID = "ca-app-pub-5144004139813427/4269745317";
+const ADMOB_REWARDED_INTERSTITIAL_UNIT_ID = "ca-app-pub-5144004139813427/5478993004";
+// ⚠️ 일반 전면광고(Interstitial) 광고 단위는 별도로 생성한 뒤 여기만 교체하세요.
+const ADMOB_INTERSTITIAL_UNIT_ID = "ca-app-pub-5144004139813427/1707268955";
+
+const REVCAT_ANDROID_API_KEY = "goog_mKQRTZhRVngtfitlRSyQlhjKAnC";
+const REVCAT_ENTITLEMENT_ID = "RiderNote Premium";
+
+const TWO_HOURS_MS = 2 * 60 * 60 * 1000;
+const BANNER_H = 50;
+const BANNER_GAP = 10;
+
 function Main() {
   const insets = useSafeAreaInsets();
   const bottomPad = insets.bottom + 12;
-  const bottomBarReserve = bottomPad + 106;
   const appStateRef = useRef<AppStateStatus>(AppState.currentState);
   const pollRef = useRef<any>(null);
 
@@ -220,6 +240,9 @@ function Main() {
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [center, setCenter] = useState<Center>({ lat: 37.5665, lng: 126.978 });
   const [updateReady, setUpdateReady] = useState<boolean>(false);
+
+  const [isPremium, setIsPremium] = useState<boolean>(false);
+  const [isTrial, setIsTrial] = useState<boolean>(false);
 
   const [memos, setMemos] = useState<MemoItem[]>([]);
   const [route, setRoute] = useState<RoutePoint[]>([]);
@@ -250,6 +273,18 @@ function Main() {
 
   // ✅ 세션 시작/종료 시간(스냅샷 route 필터용)
   const sessionStartedAtRef = useRef<number | null>(null);
+
+  const sessionLimitAtRef = useRef<number | null>(null);
+  const extendModalLockRef = useRef<boolean>(false);
+  const pendingInterstitialActionRef = useRef<null | "start" | "history">(null);
+  const pendingRewardExtendRef = useRef<boolean>(false);
+
+  const showAds = !isPremium; // 무료 + 무료체험(TRIAL) = 광고 노출
+  const limitSession = !isPremium && !isTrial; // 무료만 2시간 제한
+  const bottomBarReserve = bottomPad + 106 + (showAds ? BANNER_H + BANNER_GAP : 0);
+
+  const interstitial = useInterstitialAd(ADMOB_INTERSTITIAL_UNIT_ID, { requestNonPersonalizedAdsOnly: true });
+  const rewardedInterstitial = useRewardedInterstitialAd(ADMOB_REWARDED_INTERSTITIAL_UNIT_ID, { requestNonPersonalizedAdsOnly: true });
 
   const readSessionSlots = useCallback(async (): Promise<SessionSlots> => {
     try {
@@ -897,6 +932,166 @@ function Main() {
     };
   }, []);
 
+  useEffect(() => {
+    (async () => {
+      try {
+        await mobileAds().setRequestConfiguration({
+          maxAdContentRating: MaxAdContentRating.G,
+          tagForUnderAgeOfConsent: true
+        });
+        await mobileAds().initialize();
+      } catch {}
+    })();
+  }, []);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        Purchases.configure({ apiKey: REVCAT_ANDROID_API_KEY });
+        const info: any = await Purchases.getCustomerInfo();
+        const ent = info?.entitlements?.active?.[REVCAT_ENTITLEMENT_ID];
+        const periodType = (ent as any)?.periodType;
+        const trial = periodType === "TRIAL";
+        const active = !!ent;
+
+        setIsTrial(active && trial);
+        setIsPremium(active && !trial);
+      } catch {
+        setIsTrial(false);
+        setIsPremium(false);
+      }
+    })();
+
+    const listener = (info: any) => {
+      try {
+        const ent = info?.entitlements?.active?.[REVCAT_ENTITLEMENT_ID];
+        const periodType = (ent as any)?.periodType;
+        const trial = periodType === "TRIAL";
+        const active = !!ent;
+
+        setIsTrial(active && trial);
+        setIsPremium(active && !trial);
+      } catch {}
+    };
+
+    try {
+      (Purchases as any).addCustomerInfoUpdateListener?.(listener);
+    } catch {}
+
+    return () => {
+      try {
+        (Purchases as any).removeCustomerInfoUpdateListener?.(listener);
+      } catch {}
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!showAds) return;
+    try {
+      interstitial.load();
+    } catch {}
+    try {
+      rewardedInterstitial.load();
+    } catch {}
+  }, [showAds]);
+
+  useEffect(() => {
+    if (!showAds) return;
+    if (interstitial.isClosed) {
+      try {
+        interstitial.load();
+      } catch {}
+      const act = pendingInterstitialActionRef.current;
+      if (!act) return;
+      pendingInterstitialActionRef.current = null;
+
+      if (act === "start") {
+        (async () => {
+          await onStart();
+        })();
+        return;
+      }
+
+      if (act === "history") {
+        (async () => {
+          await refreshAll(true);
+          setHistoryVisible(true);
+        })();
+      }
+    }
+  }, [showAds, interstitial.isClosed]);
+
+  useEffect(() => {
+    if (!showAds) return;
+
+    if (rewardedInterstitial.isClosed) {
+      try {
+        rewardedInterstitial.load();
+      } catch {}
+
+      if (pendingRewardExtendRef.current && !rewardedInterstitial.isEarnedReward) {
+        pendingRewardExtendRef.current = false;
+        extendModalLockRef.current = false;
+      }
+    }
+
+    if (pendingRewardExtendRef.current && rewardedInterstitial.isEarnedReward) {
+      pendingRewardExtendRef.current = false;
+      sessionLimitAtRef.current = Date.now() + TWO_HOURS_MS;
+      extendModalLockRef.current = false;
+    }
+  }, [showAds, rewardedInterstitial.isClosed, rewardedInterstitial.isEarnedReward]);
+
+  useEffect(() => {
+    if (!isTracking || !limitSession) {
+      extendModalLockRef.current = false;
+      return;
+    }
+
+    const id = setInterval(() => {
+      const limitAt = sessionLimitAtRef.current;
+      if (!limitAt) return;
+
+      if (Date.now() >= limitAt && !extendModalLockRef.current) {
+        extendModalLockRef.current = true;
+
+        openPopup("2시간이 지났어요", "전면 광고를 보고 2시간 연장할까요?", [
+          {
+            text: "종료",
+            variant: "secondary",
+            onPress: async () => {
+              await onStop();
+            }
+          },
+          {
+            text: "연장",
+            variant: "primary",
+            onPress: async () => {
+              if (!rewardedInterstitial.isLoaded) {
+                try {
+                  rewardedInterstitial.load();
+                } catch {}
+                extendModalLockRef.current = false;
+                return;
+              }
+
+              pendingRewardExtendRef.current = true;
+
+              try {
+                rewardedInterstitial.show();
+              } catch {
+                pendingRewardExtendRef.current = false;
+                extendModalLockRef.current = false;
+              }
+            }
+          }
+        ]);
+      }
+    }, 1000);
+
+    return () => clearInterval(id);
+  }, [isTracking, limitSession, openPopup, onStop, rewardedInterstitial.isLoaded]);
+
 
   useEffect(() => {
     if (!updateReady || isTracking || permGateVisible || popup.visible || historyVisible) return;
@@ -1156,6 +1351,10 @@ function Main() {
       const r = await Tracker.startSession();
       const startedAt = r.startTime;
       sessionStartedAtRef.current = startedAt;
+
+      sessionLimitAtRef.current = limitSession ? startedAt + TWO_HOURS_MS : null;
+      extendModalLockRef.current = false;
+
       setSessionId(r.sessionId);
       setIsTracking(true);
       setStatus("기록 중");
@@ -1166,7 +1365,7 @@ function Main() {
     }
   };
 
-    const onStop = async () => {
+    async function onStop() {
     try {
       setStatus("종료 중...");
 
@@ -1175,6 +1374,11 @@ function Main() {
 
       const r: any = await Tracker.stopSession();
       const endedAt = r.endTime;
+
+      sessionLimitAtRef.current = null;
+      extendModalLockRef.current = false;
+      pendingRewardExtendRef.current = false;
+
       setIsTracking(false);
       setSessionId(null);
       setStatus("대기");
@@ -1277,7 +1481,7 @@ function Main() {
       setStatus("기록 중");
       openPopup("종료가 안 됐어요 🥲", String(e?.message ?? e));
     }
-  };
+  }
 
   const homeRoute = useMemo(() => {
     if (isTracking) return route;
@@ -1362,21 +1566,33 @@ function Main() {
           }}
         />
       ) : historyVisible ? (
-        <MemoHistoryScreen
-          memos={memos}
-          route={route}
-          sessionId={sessionId}
-          onClose={() => {
-            setHistoryVisible(false);
-            (async () => {
-              try {
-                const slots = await readSessionSlots();
-                setHomeSlot1(slots.slot1);
-              } catch {}
-              await refreshAll();
-            })();
-          }}
-        />
+        <View style={{ flex: 1, paddingBottom: showAds ? BANNER_H + BANNER_GAP + insets.bottom : 0 }}>
+          <MemoHistoryScreen
+            memos={memos}
+            route={route}
+            sessionId={sessionId}
+            onClose={() => {
+              setHistoryVisible(false);
+              (async () => {
+                try {
+                  const slots = await readSessionSlots();
+                  setHomeSlot1(slots.slot1);
+                } catch {}
+                await refreshAll();
+              })();
+            }}
+          />
+
+          {showAds ? (
+            <View style={[styles.bannerDock, { paddingBottom: insets.bottom }]}>
+              <BannerAd
+                unitId={ADMOB_BANNER_UNIT_ID}
+                size={BannerAdSize.BANNER}
+                requestOptions={{ requestNonPersonalizedAdsOnly: true }}
+              />
+            </View>
+          ) : null}
+        </View>
       ) : (
         <>
           <View style={styles.header}>
@@ -1393,6 +1609,13 @@ function Main() {
                 <TouchableOpacity
                   activeOpacity={0.88}
                   onPress={async () => {
+                    if (showAds && interstitial.isLoaded) {
+                      pendingInterstitialActionRef.current = "history";
+                      try {
+                        interstitial.show();
+                        return;
+                      } catch {}
+                    }
                     await refreshAll(true);
                     setHistoryVisible(true);
                   }}
@@ -1433,7 +1656,22 @@ function Main() {
             <View style={styles.bottomRow}>
               <TouchableOpacity
                 activeOpacity={0.88}
-                onPress={isTracking ? onStop : onStart}
+                onPress={async () => {
+                  if (isTracking) {
+                    await onStop();
+                    return;
+                  }
+
+                  if (showAds && interstitial.isLoaded) {
+                    pendingInterstitialActionRef.current = "start";
+                    try {
+                      interstitial.show();
+                      return;
+                    } catch {}
+                  }
+
+                  await onStart();
+                }}
                 style={[styles.btn, isTracking ? styles.btnStop : styles.btnStart]}
               >
                 <Text style={styles.btnText}>{isTracking ? "기록완료" : "기록시작"}</Text>
@@ -1442,6 +1680,16 @@ function Main() {
             <Text style={styles.hint}>
               홈 지도에 핀이 계속 표시됩니다. 핀을 탭하면 지도에서 바로 메모를 확인할 수 있어요. (경로/핀은 자동으로 화면에 맞춰집니다)
             </Text>
+
+            {showAds ? (
+              <View style={styles.bannerWrap}>
+                <BannerAd
+                  unitId={ADMOB_BANNER_UNIT_ID}
+                  size={BannerAdSize.BANNER}
+                  requestOptions={{ requestNonPersonalizedAdsOnly: true }}
+                />
+              </View>
+            ) : null}
           </View>
         </>
       )}
@@ -1540,6 +1788,21 @@ function createStyles(theme: AppTheme) {
     },
     btnMiniText: { color: theme.accentText, fontSize: 13, fontWeight: "700" },
     hint: { marginTop: 8, marginBottom: 6, color: theme.textMuted, fontSize: 11, lineHeight: 15 },
+
+    bannerWrap: { marginTop: 10, alignItems: "center" },
+    bannerDock: {
+      position: "absolute",
+      left: 0,
+      right: 0,
+      bottom: 0,
+      paddingTop: 10,
+      alignItems: "center",
+      backgroundColor: theme.mode === "dark" ? "rgba(15,21,28,0.94)" : "rgba(255,255,255,0.96)",
+      borderTopWidth: 1,
+      borderTopColor: theme.border,
+      zIndex: 9999,
+      elevation: 50
+    },
 
     gateRoot: {
       position: "absolute",
