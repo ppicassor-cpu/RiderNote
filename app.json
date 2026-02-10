@@ -15,7 +15,7 @@
     },
     "android": {
       "package": "com.ridernote",
-      "versionCode": 17, 
+      "versionCode": 19, 
       "permissions": [
         "com.google.android.gms.permission.AD_ID"
       ],

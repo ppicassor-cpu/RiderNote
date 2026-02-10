@@ -1888,7 +1888,7 @@ function Main() {
                 }}
                 style={[styles.btn, isTracking ? styles.btnStop : styles.btnStart]}
               >
-                <Text style={styles.btnText}>{isTracking ? "저장성공" : "출발하기"}</Text>
+                <Text style={styles.btnText}>{isTracking ? "운행종료" : "출발하기"}</Text>
               </TouchableOpacity>
             </View>
             <Text style={styles.hint}>

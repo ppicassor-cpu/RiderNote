@@ -24,6 +24,7 @@ type Props = {
 };
 
 const PREMIUM_CACHE_KEY = "RIDERNOTE_IS_PREMIUM";
+const TRIAL_CACHE_KEY = "RIDERNOTE_IS_TRIAL";
 const REVCAT_ENTITLEMENT_ID = "RiderNote Premium";
 
 type FakePackage = {
@@ -38,6 +39,7 @@ export default function AdRemovePlanScreen({ onBack, onClose }: Props) {
   const statusBarStyle = theme.mode === "dark" ? "light-content" : "dark-content";
 
   const [isPremium, setIsPremium] = useState(false);
+  const [isTrial, setIsTrial] = useState(false);
   const [pkg, setPkg] = useState<FakePackage | null>(null);
   const [isBusy, setIsBusy] = useState(false);
   const [isInitializing, setIsInitializing] = useState(true);
@@ -77,14 +79,39 @@ export default function AdRemovePlanScreen({ onBack, onClose }: Props) {
     return () => backHandler.remove();
   }, [alertVisible]);
 
+  const saveCaches = async (premiumActive: boolean, trialActive: boolean) => {
+    try {
+      await AsyncStorage.setItem(PREMIUM_CACHE_KEY, premiumActive ? "1" : "0");
+    } catch {}
+    try {
+      await AsyncStorage.setItem(TRIAL_CACHE_KEY, trialActive ? "1" : "0");
+    } catch {}
+  };
+
+  const syncFromCustomerInfo = async (info: any) => {
+    const ent = info?.entitlements?.active?.[REVCAT_ENTITLEMENT_ID];
+    const periodType = (ent as any)?.periodType;
+    const trialActive = !!ent && periodType === "TRIAL";
+    const premiumActive = !!ent && periodType !== "TRIAL";
+
+    setIsTrial(trialActive);
+    setIsPremium(premiumActive);
+    await saveCaches(premiumActive, trialActive);
+
+    return { premiumActive, trialActive };
+  };
+
   useEffect(() => {
     let mounted = true;
 
     const init = async () => {
       try {
-        const cached = await AsyncStorage.getItem(PREMIUM_CACHE_KEY);
-        const active = cached === "1";
-        if (mounted) setIsPremium(active);
+        const cachedPremium = await AsyncStorage.getItem(PREMIUM_CACHE_KEY);
+        const cachedTrial = await AsyncStorage.getItem(TRIAL_CACHE_KEY);
+        const premiumActive = cachedPremium === "1";
+        const trialActive = cachedTrial === "1";
+        if (mounted) setIsPremium(premiumActive);
+        if (mounted) setIsTrial(trialActive);
       } catch {}
 
       try {
@@ -107,17 +134,15 @@ export default function AdRemovePlanScreen({ onBack, onClose }: Props) {
 
       try {
         const info: any = await (Purchases as any).getCustomerInfo?.();
-        const ent = info?.entitlements?.active?.[REVCAT_ENTITLEMENT_ID];
-        const periodType = (ent as any)?.periodType;
-        const trial = periodType === "TRIAL";
-        const active = !!ent;
-        const premiumActive = active && !trial;
-
-        if (mounted) setIsPremium(premiumActive);
-
-        try {
-          await AsyncStorage.setItem(PREMIUM_CACHE_KEY, premiumActive ? "1" : "0");
-        } catch {}
+        if (mounted) {
+          const ent = info?.entitlements?.active?.[REVCAT_ENTITLEMENT_ID];
+          const periodType = (ent as any)?.periodType;
+          const trialActive = !!ent && periodType === "TRIAL";
+          const premiumActive = !!ent && periodType !== "TRIAL";
+          setIsTrial(trialActive);
+          setIsPremium(premiumActive);
+          await saveCaches(premiumActive, trialActive);
+        }
       } catch {
       } finally {
         if (mounted) setIsInitializing(false);
@@ -130,18 +155,19 @@ export default function AdRemovePlanScreen({ onBack, onClose }: Props) {
     };
   }, []);
 
-  const saveCache = async (active: boolean) => {
-    try {
-      await AsyncStorage.setItem(PREMIUM_CACHE_KEY, active ? "1" : "0");
-    } catch {}
-  };
-
   const handlePurchase = async () => {
     if (isBusy) return;
+
     if (isPremium) {
       showAlert("알림", "이미 프리미엄 상태입니다.");
       return;
     }
+
+    if (isTrial) {
+      showAlert("알림", "이미 무료체험(구독) 상태입니다.");
+      return;
+    }
+
     if (!pkg || !pkg.rcPackage) {
       showAlert("알림", "상품 정보를 불러오는 중입니다.");
       return;
@@ -152,22 +178,30 @@ export default function AdRemovePlanScreen({ onBack, onClose }: Props) {
       const res: any = await (Purchases as any).purchasePackage(pkg.rcPackage);
       const info = res?.customerInfo ?? res;
 
-      const ent = info?.entitlements?.active?.[REVCAT_ENTITLEMENT_ID];
-      const periodType = (ent as any)?.periodType;
-      const trial = periodType === "TRIAL";
-      const active = !!ent;
-      const premiumActive = active && !trial;
-
-      setIsPremium(premiumActive);
-      await saveCache(premiumActive);
+      const { premiumActive, trialActive } = await syncFromCustomerInfo(info);
 
       if (premiumActive) {
         showAlert("구매 완료", "프리미엄이 활성화되었습니다.");
+      } else if (trialActive) {
+        showAlert("구매 완료", "무료체험이 시작되었습니다.");
       } else {
         showAlert("오류", "구매 처리 중 오류가 발생했습니다.");
       }
     } catch {
-      showAlert("오류", "구매 처리 중 오류가 발생했습니다.");
+      try {
+        const info: any = await (Purchases as any).getCustomerInfo?.();
+        const { premiumActive, trialActive } = await syncFromCustomerInfo(info);
+
+        if (premiumActive) {
+          showAlert("구매 완료", "프리미엄이 활성화되었습니다.");
+        } else if (trialActive) {
+          showAlert("구매 완료", "무료체험이 활성화되었습니다.");
+        } else {
+          showAlert("오류", "구매 처리 중 오류가 발생했습니다.");
+        }
+      } catch {
+        showAlert("오류", "구매 처리 중 오류가 발생했습니다.");
+      }
     } finally {
       setIsBusy(false);
     }
@@ -178,17 +212,12 @@ export default function AdRemovePlanScreen({ onBack, onClose }: Props) {
     setIsBusy(true);
     try {
       const info: any = await (Purchases as any).restorePurchases?.();
-      const ent = info?.entitlements?.active?.[REVCAT_ENTITLEMENT_ID];
-      const periodType = (ent as any)?.periodType;
-      const trial = periodType === "TRIAL";
-      const active = !!ent;
-      const premiumActive = active && !trial;
-
-      setIsPremium(premiumActive);
-      await saveCache(premiumActive);
+      const { premiumActive, trialActive } = await syncFromCustomerInfo(info);
 
       if (premiumActive) {
         showAlert("복원 완료", "프리미엄 상태가 복원되었습니다.");
+      } else if (trialActive) {
+        showAlert("복원 완료", "무료체험(구독) 상태가 복원되었습니다.");
       } else {
         showAlert("알림", "복원할 구매내역이 없습니다.");
       }
@@ -218,6 +247,7 @@ export default function AdRemovePlanScreen({ onBack, onClose }: Props) {
   };
 
   const bottomPad = insets.bottom + 26;
+  const isSubscribed = isPremium || isTrial;
 
   return (
     <SafeAreaView style={styles.safe} edges={["top", "left", "right", "bottom"]}>
@@ -243,7 +273,7 @@ export default function AdRemovePlanScreen({ onBack, onClose }: Props) {
               <Text style={styles.heroSub}>광고 없이 더 깔끔하게, 기록은 더 안정적으로</Text>
             </View>
 
-            {!isPremium && (
+            {!isSubscribed && (
               <TouchableOpacity
                 style={styles.quickBuyBtn}
                 onPress={handlePurchase}
@@ -258,7 +288,7 @@ export default function AdRemovePlanScreen({ onBack, onClose }: Props) {
           <View style={styles.badgeRow}>
             <View style={[styles.badge, isPremium ? styles.badgeOn : styles.badgeOff]}>
               <Text style={[styles.badgeTxt, isPremium ? styles.badgeTxtOn : styles.badgeTxtOff]}>
-                {isInitializing ? "확인 중..." : isPremium ? "PREMIUM MEMBERSHIP" : "FREE MEMBERSHIP"}
+                {isInitializing ? "확인 중..." : isPremium ? "PREMIUM MEMBERSHIP" : isTrial ? "FREE MEMBERSHIP (무료체험중)" : "FREE MEMBERSHIP"}
               </Text>
             </View>
           </View>
@@ -295,14 +325,14 @@ export default function AdRemovePlanScreen({ onBack, onClose }: Props) {
           <TouchableOpacity
             activeOpacity={0.85}
             onPress={handlePurchase}
-            style={[styles.primaryBtn, (isBusy || isPremium || !pkg || !pkg.rcPackage) && styles.btnDisabled]}
-            disabled={isBusy || isPremium || !pkg || !pkg.rcPackage}
+            style={[styles.primaryBtn, (isBusy || isSubscribed || !pkg || !pkg.rcPackage) && styles.btnDisabled]}
+            disabled={isBusy || isSubscribed || !pkg || !pkg.rcPackage}
           >
             {isBusy ? (
               <ActivityIndicator color={ACCENT} size="small" />
             ) : (
               <Text style={styles.primaryBtnTxt}>
-                {isPremium ? "이미 프리미엄입니다" : pkg ? `${pkg.priceString} 월 구독` : "로딩 중..."}
+                {isPremium ? "이미 프리미엄입니다" : isTrial ? "무료체험중" : pkg ? `${pkg.priceString} 월 구독` : "로딩 중..."}
               </Text>
             )}
           </TouchableOpacity>

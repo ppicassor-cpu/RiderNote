@@ -173,9 +173,23 @@ export default function GoogleMap({
   const mapRef = useRef<any>(null);
 
   const [mapReady, setMapReady] = useState<boolean>(false);
-  const [bootRegion, setBootRegion] = useState<Region | null>(null);
+  const [bootRegion, setBootRegion] = useState<Region | null>(() => {
+    let latitude = center.lat;
+    let longitude = center.lng;
+    if (!isValidLatLng(latitude, longitude)) {
+      latitude = 37.5665;
+      longitude = 126.978;
+    }
+    return {
+      latitude,
+      longitude,
+      latitudeDelta: DEFAULT_DELTA,
+      longitudeDelta: DEFAULT_DELTA
+    };
+  });
   const [appPulse, setAppPulse] = useState<number>(0);
   const forceSnapRef = useRef<boolean>(true);
+  const resumeFollowOnceRef = useRef<boolean>(false);
 
   const [selectedPin, setSelectedPin] = useState<MemoPin | null>(null);
   const selectedPinRef = useRef<MemoPin | null>(null);
@@ -244,6 +258,7 @@ export default function GoogleMap({
       if (prev.match(/inactive|background/) && next === "active") {
         autoCenterDoneRef.current = false;
         forceSnapRef.current = true;
+        resumeFollowOnceRef.current = true;
         setAppPulse((v) => v + 1);
       }
     });
@@ -314,38 +329,25 @@ export default function GoogleMap({
     (async () => {
       try {
         const { status } = await Location.requestForegroundPermissionsAsync();
-        if (status !== "granted") {
-          if (alive) setBootRegion(initialRegionRef.current!);
-          return;
-        }
+        if (status !== "granted") return;
 
-        const loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High });
-        const lat = Number(loc.coords.latitude);
-        const lng = Number(loc.coords.longitude);
-        const acc = Number(loc.coords.accuracy);
+        const last = await Location.getLastKnownPositionAsync();
+        const lat = Number(last?.coords?.latitude);
+        const lng = Number(last?.coords?.longitude);
+        const acc = Number(last?.coords?.accuracy);
 
         if (!alive) return;
 
-        if (!isValidLatLng(lat, lng) || (Number.isFinite(acc) && acc > 2000)) {
-          setBootRegion(initialRegionRef.current!);
-          return;
-        }
+        if (!isValidLatLng(lat, lng) || (Number.isFinite(acc) && acc > 2000)) return;
 
         lastUserCoordRef.current = { lat, lng, acc };
         setMyLocOverlayStable(lat, lng, acc);
         lastFollowCoordRef.current = { lat, lng };
         lastFollowAnimAtRef.current = Date.now();
 
-        setBootRegion({
-          latitude: lat,
-          longitude: lng,
-          latitudeDelta: deltaRef.current.latitudeDelta,
-          longitudeDelta: deltaRef.current.longitudeDelta
-        });
-
         onCenterChangeRef.current?.({ lat, lng });
       } catch {
-        if (alive) setBootRegion(initialRegionRef.current!);
+        // ignore
       }
     })();
     return () => {
@@ -571,20 +573,36 @@ export default function GoogleMap({
     if (!followMyLocationRef.current) return;
     if (!forceSnapRef.current) return;
 
+    const snapQuick = (lat: number, lng: number, acc?: number) => {
+      lastUserCoordRef.current = { lat, lng, acc };
+      setMyLocOverlayStable(lat, lng, acc);
+      lastFollowCoordRef.current = { lat, lng };
+      lastFollowAnimAtRef.current = Date.now();
+      forceSnapRef.current = false;
+      animateToUser(lat, lng, 1);
+      onCenterChangeRef.current?.({ lat, lng });
+    };
+
     const last = lastUserCoordRef.current;
     if (last && isValidLatLng(last.lat, last.lng)) {
-      forceSnapRef.current = false;
-      lastFollowCoordRef.current = { lat: last.lat, lng: last.lng };
-      lastFollowAnimAtRef.current = Date.now();
-      animateToUser(last.lat, last.lng, 1);
-      onCenterChangeRef.current?.({ lat: last.lat, lng: last.lng });
-      return;
+      snapQuick(last.lat, last.lng, last.acc);
     }
 
     (async () => {
       try {
         const { status } = await Location.requestForegroundPermissionsAsync();
         if (status !== "granted") return;
+
+        if (!lastUserCoordRef.current || !isValidLatLng(lastUserCoordRef.current.lat, lastUserCoordRef.current.lng)) {
+          const cached = await Location.getLastKnownPositionAsync();
+          const lat0 = Number(cached?.coords?.latitude);
+          const lng0 = Number(cached?.coords?.longitude);
+          const acc0 = Number(cached?.coords?.accuracy);
+
+          if (isValidLatLng(lat0, lng0) && (!Number.isFinite(acc0) || acc0 <= 2000)) {
+            snapQuick(lat0, lng0, acc0);
+          }
+        }
 
         const loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High });
         const lat = Number(loc.coords.latitude);
@@ -595,11 +613,12 @@ export default function GoogleMap({
         if (Number.isFinite(acc) && acc > 2000) return;
 
         lastUserCoordRef.current = { lat, lng, acc };
+        setMyLocOverlayStable(lat, lng, acc);
         lastFollowCoordRef.current = { lat, lng };
         lastFollowAnimAtRef.current = Date.now();
         forceSnapRef.current = false;
 
-        animateToUser(lat, lng, 1);
+        animateToUser(lat, lng, 450);
         onCenterChangeRef.current?.({ lat, lng });
       } catch {
         // ignore
@@ -673,9 +692,19 @@ export default function GoogleMap({
 
             if (forceSnapRef.current) {
               forceSnapRef.current = false;
+              resumeFollowOnceRef.current = false;
               lastFollowAnimAtRef.current = now;
               lastFollowCoordRef.current = { lat, lng };
               animateToUser(lat, lng, 1);
+              onCenterChangeRef.current?.({ lat, lng });
+              return;
+            }
+
+            if (resumeFollowOnceRef.current) {
+              resumeFollowOnceRef.current = false;
+              lastFollowAnimAtRef.current = now;
+              lastFollowCoordRef.current = { lat, lng };
+              animateToUser(lat, lng, 450);
               onCenterChangeRef.current?.({ lat, lng });
               return;
             }
@@ -936,6 +965,10 @@ export default function GoogleMap({
 
   const onInitializedStable = useCallback(async () => {
     setMapReady(true);
+    autoCenterDoneRef.current = false;
+    forceSnapRef.current = true;
+    resumeFollowOnceRef.current = true;
+    setAppPulse((v) => v + 1);
 
     try {
       const { status } = await Location.requestForegroundPermissionsAsync();
