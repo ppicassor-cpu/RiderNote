@@ -1,10 +1,26 @@
 ﻿// FILE: C:\RiderNote\src\components\GoogleMap.tsx
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AppState, Dimensions, ScrollView, StyleProp, StyleSheet, Text, TextInput, TouchableOpacity, View, ViewStyle } from "react-native";
+import {
+  ActivityIndicator,
+  AppState,
+  Dimensions,
+  ScrollView,
+  StyleProp,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
+  ViewStyle,
+  useColorScheme
+} from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import MapView, { Marker, Polyline, PROVIDER_GOOGLE } from "react-native-maps";
-import type { LatLng, Region } from "react-native-maps";
+import { NaverMapView, NaverMapMarkerOverlay, NaverMapPathOverlay } from "@mj-studio/react-native-naver-map";
+import * as Location from "expo-location";
+
+type LatLng = { latitude: number; longitude: number };
+type Region = { latitude: number; longitude: number; latitudeDelta: number; longitudeDelta: number };
 
 type Center = { lat: number; lng: number };
 
@@ -22,21 +38,15 @@ export type MemoPin = {
 type Props = {
   center: Center;
   style?: StyleProp<ViewStyle>;
-
+  isNightModeEnabled?: boolean;
   route?: RoutePoint[];
   memoPins?: MemoPin[];
-
-  onPressMemoPin?: (pin: MemoPin) => void;
   onDeleteMemoPin?: (pin: MemoPin) => void | Promise<void>;
   onUpdateMemoPin?: (pin: MemoPin, nextText: string) => void | Promise<void>;
-
   showCenterMarker?: boolean;
-
   autoFit?: boolean;
-
   fitSessionId?: string | null;
-
-  customMapStyle?: any;
+  onCenterChange?: (newCenter: Center) => void;
 };
 
 function fmtTime(ms?: number) {
@@ -73,31 +83,139 @@ const DEFAULT_DELTA = 0.02;
 
 const KEY_MAP_DELTA = "RIDERNOTE_MAP_DELTA_V1";
 
+type RouteSeg = { coords: LatLng[]; color: string };
+
+type MapLayerProps = {
+  initialRegion: Region;
+  routeSegments: RouteSeg[];
+  pins: MemoPin[];
+  shouldShowCenterMarker: boolean;
+  center: Center;
+  isNightModeEnabled?: boolean;
+  myLocation: { lat: number; lng: number; acc?: number } | null;
+  onInitialized: () => void | Promise<void>;
+  onTapMap: () => void;
+  onCameraChanged: (e: any) => void;
+  onCameraIdle: (camera: any) => void;
+  onTapPin: (pin: MemoPin) => void;
+};
+
+const NaverMapLayer = React.memo(
+  React.forwardRef<any, MapLayerProps>(function NaverMapLayerInner(
+    { initialRegion, routeSegments, pins, shouldShowCenterMarker, center, isNightModeEnabled, myLocation, onInitialized, onTapMap, onCameraChanged, onCameraIdle, onTapPin },
+    ref
+  ) {
+    const colorScheme = useColorScheme();
+    const isDark = colorScheme === "dark";
+
+    return (
+      <NaverMapView
+        ref={ref}
+        style={styles.map}
+        initialRegion={initialRegion}
+        mapType={isDark ? "Navi" : "Basic"}
+        isNightModeEnabled={!!isNightModeEnabled}
+        locationOverlay={
+          myLocation && isValidLatLng(myLocation.lat, myLocation.lng)
+            ? {
+                isVisible: true,
+                position: { latitude: myLocation.lat, longitude: myLocation.lng },
+                image: { httpUri: "https://twemoji.maxcdn.com/v/latest/72x72/1f6f5.png" },
+                imageWidth: 28,
+                imageHeight: 28,
+                anchor: { x: 0.5, y: 0.5 },
+                circleRadius: 0,
+                circleColor: "transparent",
+                circleOutlineWidth: 0,
+                circleOutlineColor: "transparent"
+              }
+            : { isVisible: false }
+        }
+        onInitialized={onInitialized}
+        onTapMap={onTapMap}
+        onCameraChanged={onCameraChanged}
+        onCameraIdle={onCameraIdle}
+      >
+        {routeSegments.map((seg, i) => (
+          <NaverMapPathOverlay key={`route_seg_${i}`} coords={seg.coords as any} width={3} color={seg.color} />
+        ))}
+
+        {pins.map((pin) => (
+          <NaverMapMarkerOverlay
+            key={pin.id}
+            latitude={pin.lat}
+            longitude={pin.lng}
+            onTap={() => onTapPin(pin)}
+          />
+        ))}
+
+        {shouldShowCenterMarker && isValidLatLng(center.lat, center.lng) && (
+          <NaverMapMarkerOverlay latitude={center.lat} longitude={center.lng} image={{ symbol: "lightblue" }} />
+        )}
+      </NaverMapView>
+    );
+  })
+);
+
 export default function GoogleMap({
   center,
   style,
+  isNightModeEnabled,
   route,
   memoPins,
   showCenterMarker,
   autoFit,
   fitSessionId,
-  customMapStyle,
   onDeleteMemoPin,
-  onUpdateMemoPin
+  onUpdateMemoPin,
+  onCenterChange
 }: Props) {
   const mapRef = useRef<any>(null);
-  const userInteractedRef = useRef<boolean>(false);
 
- const [mapReady, setMapReady] = useState<boolean>(false);
+  const [mapReady, setMapReady] = useState<boolean>(false);
+  const [bootRegion, setBootRegion] = useState<Region | null>(null);
+  const [appPulse, setAppPulse] = useState<number>(0);
+  const forceSnapRef = useRef<boolean>(true);
+
   const [selectedPin, setSelectedPin] = useState<MemoPin | null>(null);
+  const selectedPinRef = useRef<MemoPin | null>(null);
+
   const [bubblePos, setBubblePos] = useState<BubblePos | null>(null);
   const [deleteConfirmVisible, setDeleteConfirmVisible] = useState<boolean>(false);
   const [editVisible, setEditVisible] = useState<boolean>(false);
   const [editText, setEditText] = useState<string>("");
-  const [delta, setDelta] = useState<{ latitudeDelta: number; longitudeDelta: number }>({
-    latitudeDelta: DEFAULT_DELTA,
-    longitudeDelta: DEFAULT_DELTA
-  });
+
+  const userInteractedRef = useRef<boolean>(false);
+  const lastCameraReasonRef = useRef<"Developer" | "Gesture" | "Control" | "Location" | null>(null);
+
+  const lastZoomRef = useRef<number | null>(null);
+  const lastBearingRef = useRef<number | null>(null);
+  const lastTiltRef = useRef<number | null>(null);
+
+  const autoCenterDoneRef = useRef<boolean>(false);
+  const appStateRef = useRef<string>(AppState.currentState);
+
+  const [followMyLocation, setFollowMyLocation] = useState<boolean>(true);
+  const followMyLocationRef = useRef<boolean>(true);
+
+  const lastUserCoordRef = useRef<{ lat: number; lng: number; acc?: number } | null>(null);
+  const lastFollowAnimAtRef = useRef<number>(0);
+  const lastFollowCoordRef = useRef<{ lat: number; lng: number } | null>(null);
+  const locationWatcherRef = useRef<any>(null);
+
+  const [myLocOverlay, setMyLocOverlay] = useState<{ lat: number; lng: number; acc?: number } | null>(null);
+
+  const setMyLocOverlayStable = useCallback((lat: number, lng: number, acc?: number) => {
+    setMyLocOverlay((prev) => {
+      if (prev && Math.abs(prev.lat - lat) < 0.0000005 && Math.abs(prev.lng - lng) < 0.0000005) {
+        const pAcc = typeof prev.acc === "number" ? prev.acc : -1;
+        const nAcc = typeof acc === "number" ? acc : -1;
+        if (Math.abs(pAcc - nAcc) < 1) return prev;
+      }
+      return { lat, lng, acc };
+    });
+  }, []);
+
   const deltaRef = useRef<{ latitudeDelta: number; longitudeDelta: number }>({
     latitudeDelta: DEFAULT_DELTA,
     longitudeDelta: DEFAULT_DELTA
@@ -106,18 +224,18 @@ export default function GoogleMap({
   const appliedDeltaRef = useRef<boolean>(false);
   const saveTimerRef = useRef<any>(null);
 
-  const autoCenterDoneRef = useRef<boolean>(false);
-  const appStateRef = useRef<string>(AppState.currentState);
-
-  const [followMyLocation, setFollowMyLocation] = useState<boolean>(false);
-  const followMyLocationRef = useRef<boolean>(false);
-  const lastUserCoordRef = useRef<{ lat: number; lng: number; acc?: number } | null>(null);
-  const lastFollowAnimAtRef = useRef<number>(0);
-  const lastFollowCoordRef = useRef<{ lat: number; lng: number } | null>(null);
+  const onCenterChangeRef = useRef<Props["onCenterChange"]>(onCenterChange);
+  useEffect(() => {
+    onCenterChangeRef.current = onCenterChange;
+  }, [onCenterChange]);
 
   useEffect(() => {
     followMyLocationRef.current = followMyLocation;
   }, [followMyLocation]);
+
+  useEffect(() => {
+    selectedPinRef.current = selectedPin;
+  }, [selectedPin]);
 
   useEffect(() => {
     const sub = AppState.addEventListener("change", (next) => {
@@ -125,6 +243,8 @@ export default function GoogleMap({
       appStateRef.current = next;
       if (prev.match(/inactive|background/) && next === "active") {
         autoCenterDoneRef.current = false;
+        forceSnapRef.current = true;
+        setAppPulse((v) => v + 1);
       }
     });
     return () => sub.remove();
@@ -137,18 +257,20 @@ export default function GoogleMap({
         const s = await AsyncStorage.getItem(KEY_MAP_DELTA);
         if (!alive || !s) return;
         const obj = JSON.parse(s);
-        const latD = Number(obj?.latitudeDelta);
-        const lngD = Number(obj?.longitudeDelta);
-        if (Number.isFinite(latD) && Number.isFinite(lngD) && latD > 0 && lngD > 0) {
-          const next = {
-            latitudeDelta: clamp(latD, 0.0005, 5),
-            longitudeDelta: clamp(lngD, 0.0005, 5)
+
+        const latD0 = Number(obj?.latitudeDelta);
+        const lngD0 = Number(obj?.longitudeDelta);
+
+        if (Number.isFinite(latD0) && Number.isFinite(lngD0) && latD0 > 0 && lngD0 > 0) {
+          deltaRef.current = {
+            latitudeDelta: clamp(latD0, 0.0005, 5),
+            longitudeDelta: clamp(lngD0, 0.0005, 5)
           };
-          deltaRef.current = next;
           loadedDeltaRef.current = true;
-          setDelta(next);
         }
-      } catch {}
+      } catch {
+        // ignore
+      }
     })();
     return () => {
       alive = false;
@@ -159,6 +281,11 @@ export default function GoogleMap({
     return () => {
       if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
       saveTimerRef.current = null;
+
+      if (locationWatcherRef.current) {
+        locationWatcherRef.current.remove();
+        locationWatcherRef.current = null;
+      }
     };
   }, []);
 
@@ -166,26 +293,76 @@ export default function GoogleMap({
     userInteractedRef.current = false;
   }, [fitSessionId]);
 
-  const initialRegion: Region = useMemo(
-    () => ({
-      latitude: center.lat,
-      longitude: center.lng,
-      latitudeDelta: delta.latitudeDelta,
-      longitudeDelta: delta.longitudeDelta
-    }),
-    [center.lat, center.lng, delta.latitudeDelta, delta.longitudeDelta]
-  );
+  const initialRegionRef = useRef<Region | null>(null);
+  if (!initialRegionRef.current) {
+    let latitude = center.lat;
+    let longitude = center.lng;
+    if (!isValidLatLng(latitude, longitude)) {
+      latitude = 37.5665;
+      longitude = 126.978;
+    }
+    initialRegionRef.current = {
+      latitude,
+      longitude,
+      latitudeDelta: deltaRef.current.latitudeDelta,
+      longitudeDelta: deltaRef.current.longitudeDelta
+    };
+  }
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const { status } = await Location.requestForegroundPermissionsAsync();
+        if (status !== "granted") {
+          if (alive) setBootRegion(initialRegionRef.current!);
+          return;
+        }
+
+        const loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High });
+        const lat = Number(loc.coords.latitude);
+        const lng = Number(loc.coords.longitude);
+        const acc = Number(loc.coords.accuracy);
+
+        if (!alive) return;
+
+        if (!isValidLatLng(lat, lng) || (Number.isFinite(acc) && acc > 2000)) {
+          setBootRegion(initialRegionRef.current!);
+          return;
+        }
+
+        lastUserCoordRef.current = { lat, lng, acc };
+        setMyLocOverlayStable(lat, lng, acc);
+        lastFollowCoordRef.current = { lat, lng };
+        lastFollowAnimAtRef.current = Date.now();
+
+        setBootRegion({
+          latitude: lat,
+          longitude: lng,
+          latitudeDelta: deltaRef.current.latitudeDelta,
+          longitudeDelta: deltaRef.current.longitudeDelta
+        });
+
+        onCenterChangeRef.current?.({ lat, lng });
+      } catch {
+        if (alive) setBootRegion(initialRegionRef.current!);
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   const routeCoords: LatLng[] = useMemo(() => {
     const r = route || [];
     return r
-      .filter((p) => typeof p?.lat === "number" && typeof p?.lng === "number")
+      .filter((p) => typeof p?.lat === "number" && typeof p?.lng === "number" && isValidLatLng(p.lat, p.lng))
       .map((p) => ({ latitude: p.lat, longitude: p.lng }));
   }, [route]);
 
-  const routeSegments = useMemo(() => {
+  const routeSegments: RouteSeg[] = useMemo(() => {
     const pts = (route || [])
-      .filter((p) => typeof p?.lat === "number" && typeof p?.lng === "number")
+      .filter((p) => typeof p?.lat === "number" && typeof p?.lng === "number" && isValidLatLng(p.lat, p.lng))
       .map((p) => ({
         lat: p.lat as number,
         lng: p.lng as number,
@@ -219,7 +396,7 @@ export default function GoogleMap({
       }
     }
 
-    const segs: { coords: LatLng[]; color: string }[] = [];
+    const segs: RouteSeg[] = [];
     const denomIdx = Math.max(1, pts.length - 2);
 
     for (let i = 0; i < pts.length - 1; i++) {
@@ -249,9 +426,51 @@ export default function GoogleMap({
     return segs;
   }, [route]);
 
+  const routeSegmentsWithMyLoc: RouteSeg[] = useMemo(() => {
+    const my = myLocOverlay;
+    if (!my || !isValidLatLng(my.lat, my.lng)) return routeSegments;
+
+    if (routeSegments.length > 0) {
+      const lastSeg = routeSegments[routeSegments.length - 1];
+      const lastCoords = lastSeg?.coords || [];
+      const last = lastCoords[lastCoords.length - 1];
+      if (!last) return routeSegments;
+
+      return [
+        ...routeSegments,
+        {
+          coords: [last, { latitude: my.lat, longitude: my.lng }],
+          color: lastSeg.color
+        }
+      ];
+    }
+
+    if (routeCoords.length > 0) {
+      const last = routeCoords[routeCoords.length - 1];
+      return [
+        {
+          coords: [last, { latitude: my.lat, longitude: my.lng }],
+          color: "rgba(123, 228, 241, 0.850)"
+        }
+      ];
+    }
+
+    return routeSegments;
+  }, [routeSegments, myLocOverlay, routeCoords]);
+
   const pins: MemoPin[] = useMemo(() => {
     const p = memoPins || [];
-    return p.filter((x) => x && typeof x.lat === "number" && typeof x.lng === "number" && typeof x.id === "string");
+    const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+    return p.filter(
+      (x) =>
+        x &&
+        typeof x.lat === "number" &&
+        typeof x.lng === "number" &&
+        typeof x.id === "string" &&
+        isValidLatLng(x.lat, x.lng) &&
+        typeof x.savedAt === "number" &&
+        x.savedAt > cutoff
+    );
   }, [memoPins]);
 
   const fitPins: MemoPin[] = useMemo(() => {
@@ -261,6 +480,233 @@ export default function GoogleMap({
 
   const defaultCenterMarker = pins.length === 0 && routeCoords.length === 0;
   const shouldShowCenterMarker = typeof showCenterMarker === "boolean" ? showCenterMarker : defaultCenterMarker;
+
+  const animateToUser = useCallback((lat: number, lng: number, ms: number) => {
+    const map = mapRef.current;
+    if (!map) return;
+
+    const tryCall = (fn: any, ...args: any[]) => {
+      try {
+        fn?.(...args);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+
+    const z = lastZoomRef.current;
+    const b = lastBearingRef.current;
+    const t = lastTiltRef.current;
+
+    const camBase: any = {
+      latitude: lat,
+      longitude: lng,
+      duration: ms,
+      easing: "EaseInOut"
+    };
+    if (Number.isFinite(b as any)) camBase.bearing = b;
+    if (Number.isFinite(t as any)) camBase.tilt = t;
+
+    // 1) 가장 확실: cameraTo(줌 유지 시도)
+    if (typeof map.animateCameraTo === "function") {
+      if (tryCall(map.animateCameraTo, camBase)) return;
+
+      const z2 = Number.isFinite(z as any) && (z as number) > 0 ? (z as number) : 16;
+      if (tryCall(map.animateCameraTo, { ...camBase, zoom: z2 })) return;
+    }
+
+    // 2) 구버전/다른 시그니처 지원: animateCamera
+    if (typeof map.animateCamera === "function") {
+      if (tryCall(map.animateCamera, { center: { latitude: lat, longitude: lng }, duration: ms })) return;
+      if (tryCall(map.animateCamera, { latitude: lat, longitude: lng, duration: ms })) return;
+      if (tryCall(map.animateCamera, { lat, lng, duration: ms })) return;
+      if (tryCall(map.animateCamera, { center: { lat, lng }, duration: ms })) return;
+      const z2 = Number.isFinite(z as any) && (z as number) > 0 ? (z as number) : 16;
+      if (tryCall(map.animateCamera, { latitude: lat, longitude: lng, zoom: z2, duration: ms })) return;
+      if (tryCall(map.animateCamera, { center: { latitude: lat, longitude: lng }, zoom: z2, duration: ms })) return;
+    }
+
+    // 3) region 기반(델타 유지)
+    const region = {
+      latitude: lat,
+      longitude: lng,
+      latitudeDelta: deltaRef.current.latitudeDelta,
+      longitudeDelta: deltaRef.current.longitudeDelta
+    };
+    if (typeof map.animateRegionTo === "function") {
+      if (tryCall(map.animateRegionTo, { ...region, duration: ms })) return;
+      if (tryCall(map.animateRegionTo, region, ms)) return;
+    }
+
+    // 4) 최후 폴백: two-coords로 센터 맞추기(대칭 패딩 0)
+    if (typeof map.animateCameraWithTwoCoords === "function") {
+      const latHalf = Math.max(0.00001, deltaRef.current.latitudeDelta / 2);
+      const lngHalf = Math.max(0.00001, deltaRef.current.longitudeDelta / 2);
+
+      const payloadNew = {
+        coord1: { latitude: lat - latHalf, longitude: lng - lngHalf },
+        coord2: { latitude: lat + latHalf, longitude: lng + lngHalf },
+        duration: ms,
+        paddingTop: 0,
+        paddingBottom: 0,
+        paddingLeft: 0,
+        paddingRight: 0
+      };
+
+      if (tryCall(map.animateCameraWithTwoCoords, payloadNew)) return;
+
+      const payloadOld = {
+        coord1: payloadNew.coord1,
+        coord2: payloadNew.coord2,
+        padding: { top: 0, right: 0, bottom: 0, left: 0 },
+        duration: ms
+      };
+
+      tryCall(map.animateCameraWithTwoCoords, payloadOld);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!mapReady) return;
+    if (!followMyLocationRef.current) return;
+    if (!forceSnapRef.current) return;
+
+    const last = lastUserCoordRef.current;
+    if (last && isValidLatLng(last.lat, last.lng)) {
+      forceSnapRef.current = false;
+      lastFollowCoordRef.current = { lat: last.lat, lng: last.lng };
+      lastFollowAnimAtRef.current = Date.now();
+      animateToUser(last.lat, last.lng, 1);
+      onCenterChangeRef.current?.({ lat: last.lat, lng: last.lng });
+      return;
+    }
+
+    (async () => {
+      try {
+        const { status } = await Location.requestForegroundPermissionsAsync();
+        if (status !== "granted") return;
+
+        const loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High });
+        const lat = Number(loc.coords.latitude);
+        const lng = Number(loc.coords.longitude);
+        const acc = Number(loc.coords.accuracy);
+
+        if (!isValidLatLng(lat, lng)) return;
+        if (Number.isFinite(acc) && acc > 2000) return;
+
+        lastUserCoordRef.current = { lat, lng, acc };
+        lastFollowCoordRef.current = { lat, lng };
+        lastFollowAnimAtRef.current = Date.now();
+        forceSnapRef.current = false;
+
+        animateToUser(lat, lng, 1);
+        onCenterChangeRef.current?.({ lat, lng });
+      } catch {
+        // ignore
+      }
+    })();
+  }, [mapReady, appPulse, animateToUser]);
+
+  const applyDeltaToCenterOnce = useCallback(() => {
+    if (!mapReady) return;
+    if (!loadedDeltaRef.current) return;
+    if (appliedDeltaRef.current) return;
+
+    appliedDeltaRef.current = true;
+
+    try {
+      mapRef.current?.animateRegionTo?.(
+        {
+          latitude:
+            followMyLocationRef.current && lastUserCoordRef.current && isValidLatLng(lastUserCoordRef.current.lat, lastUserCoordRef.current.lng)
+              ? lastUserCoordRef.current.lat
+              : center.lat,
+          longitude:
+            followMyLocationRef.current && lastUserCoordRef.current && isValidLatLng(lastUserCoordRef.current.lat, lastUserCoordRef.current.lng)
+              ? lastUserCoordRef.current.lng
+              : center.lng,
+          latitudeDelta: deltaRef.current.latitudeDelta,
+          longitudeDelta: deltaRef.current.longitudeDelta
+        },
+        1
+      );
+    } catch {
+      // ignore
+    }
+    setFollowMyLocation(true);
+  }, [mapReady, center.lat, center.lng]);
+
+  useEffect(() => {
+    applyDeltaToCenterOnce();
+  }, [applyDeltaToCenterOnce]);
+
+  useEffect(() => {
+    if (!mapReady) return;
+
+    if (!followMyLocation) {
+      if (locationWatcherRef.current) {
+        locationWatcherRef.current.remove();
+        locationWatcherRef.current = null;
+      }
+      return;
+    }
+
+    (async () => {
+      try {
+        const { status } = await Location.requestForegroundPermissionsAsync();
+        if (status !== "granted") return;
+
+        locationWatcherRef.current = await Location.watchPositionAsync(
+          { accuracy: Location.Accuracy.High, timeInterval: 1000, distanceInterval: 5 },
+          (loc) => {
+            const lat = Number(loc.coords.latitude);
+            const lng = Number(loc.coords.longitude);
+            const acc = Number(loc.coords.accuracy);
+
+            if (!isValidLatLng(lat, lng)) return;
+            if (Number.isFinite(acc) && acc > 2000) return;
+
+            lastUserCoordRef.current = { lat, lng, acc };
+            setMyLocOverlayStable(lat, lng, acc);
+
+            const now = Date.now();
+
+            if (forceSnapRef.current) {
+              forceSnapRef.current = false;
+              lastFollowAnimAtRef.current = now;
+              lastFollowCoordRef.current = { lat, lng };
+              animateToUser(lat, lng, 1);
+              onCenterChangeRef.current?.({ lat, lng });
+              return;
+            }
+
+            if (now - lastFollowAnimAtRef.current < 650) return;
+
+            const prev = lastFollowCoordRef.current;
+            if (prev) {
+              const dLat = Math.abs(prev.lat - lat);
+              const dLng = Math.abs(prev.lng - lng);
+              if (dLat < 0.00002 && dLng < 0.00002) return;
+            }
+
+            lastFollowAnimAtRef.current = now;
+            lastFollowCoordRef.current = { lat, lng };
+            animateToUser(lat, lng, 450);
+            onCenterChangeRef.current?.({ lat, lng });
+          }
+        );
+      } catch {
+        // ignore
+      }
+    })();
+
+    return () => {
+      if (locationWatcherRef.current) {
+        locationWatcherRef.current.remove();
+        locationWatcherRef.current = null;
+      }
+    };
+  }, [followMyLocation, mapReady, animateToUser]);
 
   const doFit = useCallback(() => {
     const enabled = typeof autoFit === "boolean" ? autoFit : true;
@@ -275,82 +721,115 @@ export default function GoogleMap({
       for (const p of fitPins) targets.push({ latitude: p.lat, longitude: p.lng });
     }
 
-    if (targets.length === 0) return;
+    if (targets.length === 0) {
+      (async () => {
+        try {
+          const { status } = await Location.requestForegroundPermissionsAsync();
+          if (status !== "granted") return;
+          const loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High });
+          const lat = Number(loc.coords.latitude);
+          const lng = Number(loc.coords.longitude);
+          if (isValidLatLng(lat, lng)) {
+            animateToUser(lat, lng, 450);
+            onCenterChangeRef.current?.({ lat, lng });
+          }
+        } catch {
+          // ignore
+        }
+      })();
+      return;
+    }
 
     const pad = { top: 70, right: 50, bottom: 220, left: 50 };
 
+    if (targets.length === 1) {
+      const only = targets[0];
+      try {
+        mapRef.current?.animateRegionTo?.(
+          {
+            latitude: only.latitude,
+            longitude: only.longitude,
+            latitudeDelta: deltaRef.current.latitudeDelta,
+            longitudeDelta: deltaRef.current.longitudeDelta
+          },
+          450
+        );
+      } catch {
+        // ignore
+      }
+      return;
+    }
+
+    const lats = targets.map((t) => t.latitude);
+    const lngs = targets.map((t) => t.longitude);
+    const minLat = Math.min(...lats);
+    const maxLat = Math.max(...lats);
+    const minLng = Math.min(...lngs);
+    const maxLng = Math.max(...lngs);
+
     try {
-      mapRef.current?.fitToCoordinates?.(targets, { edgePadding: pad, animated: true });
-    } catch {}
-  }, [autoFit, fitPins, mapReady, routeCoords]);
+      mapRef.current?.animateCameraWithTwoCoords?.({
+        coord1: { latitude: minLat, longitude: minLng },
+        coord2: { latitude: maxLat, longitude: maxLng },
+        padding: pad,
+        duration: 450
+      });
+    } catch {
+      // ignore
+    }
+  }, [autoFit, fitPins, mapReady, routeCoords, animateToUser]);
 
   const updateBubblePosition = useCallback(
     async (pin: MemoPin) => {
       if (!mapReady) return;
       const map = mapRef.current;
-      if (!map?.pointForCoordinate) return;
+      if (typeof map?.coordinateToScreen !== "function") return;
+
+      const getPt = async () => {
+        const pt0 = await map.coordinateToScreen({ latitude: pin.lat, longitude: pin.lng });
+        const x0 = Number((pt0 as any)?.x ?? (pt0 as any)?.screenX);
+        const y0 = Number((pt0 as any)?.y ?? (pt0 as any)?.screenY);
+
+        if (!Number.isFinite(x0) || !Number.isFinite(y0)) return null;
+        if (x0 <= 0 && y0 <= 0) return null;
+
+        return { x: x0, y: y0 };
+      };
 
       try {
-        const pt = await map.pointForCoordinate({ latitude: pin.lat, longitude: pin.lng });
+        await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+
+        let pt = await getPt();
+        if (!pt) {
+          await new Promise<void>((resolve) => setTimeout(() => resolve(), 60));
+          pt = await getPt();
+        }
+        if (!pt) throw new Error("bad_point");
+
         const { width, height } = Dimensions.get("window");
 
         const clampedX = clamp(pt.x, BUBBLE_W / 2 + EDGE, width - BUBBLE_W / 2 - EDGE);
+        const clampedY = clamp(pt.y, EDGE, height - EDGE);
 
-        const canPlaceAbove = pt.y > BUBBLE_MAX_H + 56;
-        const canPlaceBelow = height - pt.y > BUBBLE_MAX_H + 56;
-
+        const canPlaceAbove = clampedY > BUBBLE_MAX_H + 56;
+        const canPlaceBelow = height - clampedY > BUBBLE_MAX_H + 56;
         const placement: "above" | "below" = canPlaceAbove ? "above" : canPlaceBelow ? "below" : "above";
-        setBubblePos({ x: clampedX, y: pt.y, placement });
-      } catch {}
+
+        setBubblePos({ x: clampedX, y: clampedY, placement });
+      } catch {
+        const { width, height } = Dimensions.get("window");
+        const clampedX = width / 2;
+        const ptY = height / 2;
+
+        const canPlaceAbove = ptY > BUBBLE_MAX_H + 56;
+        const canPlaceBelow = height - ptY > BUBBLE_MAX_H + 56;
+        const placement: "above" | "below" = canPlaceAbove ? "above" : canPlaceBelow ? "below" : "above";
+
+        setBubblePos({ x: clampedX, y: ptY, placement });
+      }
     },
     [mapReady]
   );
-
-  const animateToUser = useCallback((lat: number, lng: number, ms: number) => {
-    try {
-      mapRef.current?.animateToRegion?.(
-        {
-          latitude: lat,
-          longitude: lng,
-          latitudeDelta: deltaRef.current.latitudeDelta,
-          longitudeDelta: deltaRef.current.longitudeDelta
-        },
-        ms
-      );
-    } catch {}
-  }, []);
-
-  const handlePressMyLocation = useCallback(() => {
-    userInteractedRef.current = false;
-    setFollowMyLocation(true);
-
-    const last = lastUserCoordRef.current;
-    if (last && isValidLatLng(last.lat, last.lng)) {
-      lastFollowCoordRef.current = { lat: last.lat, lng: last.lng };
-      lastFollowAnimAtRef.current = Date.now();
-      animateToUser(last.lat, last.lng, 450);
-    }
-  }, [animateToUser]);
-
-  useEffect(() => {
-    if (!mapReady) return;
-    if (!loadedDeltaRef.current) return;
-    if (appliedDeltaRef.current) return;
-
-    appliedDeltaRef.current = true;
-
-    try {
-      mapRef.current?.animateToRegion?.(
-        {
-          latitude: center.lat,
-          longitude: center.lng,
-          latitudeDelta: deltaRef.current.latitudeDelta,
-          longitudeDelta: deltaRef.current.longitudeDelta
-        },
-        1
-      );
-    } catch {}
-  }, [mapReady, center.lat, center.lng, delta.latitudeDelta, delta.longitudeDelta]);
 
   useEffect(() => {
     if (!mapReady) return;
@@ -366,7 +845,7 @@ export default function GoogleMap({
     }
 
     try {
-      mapRef.current?.animateToRegion?.(
+      mapRef.current?.animateRegionTo?.(
         {
           latitude: center.lat,
           longitude: center.lng,
@@ -375,7 +854,9 @@ export default function GoogleMap({
         },
         350
       );
-    } catch {}
+    } catch {
+      // ignore
+    }
   }, [center.lat, center.lng, mapReady, autoFit, routeCoords.length, fitPins.length, doFit]);
 
   useEffect(() => {
@@ -419,110 +900,169 @@ export default function GoogleMap({
     return Math.min(BUBBLE_MAX_H, Math.max(180, Math.floor(height * 0.55)));
   }, []);
 
+  const handlePressMyLocation = useCallback(async () => {
+    userInteractedRef.current = false;
+    setFollowMyLocation(true);
+
+    try {
+      const { status } = await Location.requestForegroundPermissionsAsync();
+      if (status !== "granted") return;
+
+      const loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High });
+      const lat = Number(loc.coords.latitude);
+      const lng = Number(loc.coords.longitude);
+      const acc = Number(loc.coords.accuracy);
+
+      if (isValidLatLng(lat, lng) && (!Number.isFinite(acc) || acc <= 2000)) {
+        lastUserCoordRef.current = { lat, lng, acc };
+        lastFollowCoordRef.current = { lat, lng };
+        lastFollowAnimAtRef.current = Date.now();
+        animateToUser(lat, lng, 450);
+        onCenterChangeRef.current?.({ lat, lng });
+        return;
+      }
+    } catch {
+      // ignore
+    }
+
+    const last = lastUserCoordRef.current;
+    if (last && isValidLatLng(last.lat, last.lng)) {
+      lastFollowCoordRef.current = { lat: last.lat, lng: last.lng };
+      lastFollowAnimAtRef.current = Date.now();
+      animateToUser(last.lat, last.lng, 450);
+      onCenterChangeRef.current?.({ lat: last.lat, lng: last.lng });
+    }
+  }, [animateToUser]);
+
+  const onInitializedStable = useCallback(async () => {
+    setMapReady(true);
+
+    try {
+      const { status } = await Location.requestForegroundPermissionsAsync();
+      if (status !== "granted") return;
+
+      const loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High });
+      const lat = Number(loc.coords.latitude);
+      const lng = Number(loc.coords.longitude);
+      const acc = Number(loc.coords.accuracy);
+
+      if (isValidLatLng(lat, lng) && (!Number.isFinite(acc) || acc <= 2000)) {
+        lastUserCoordRef.current = { lat, lng, acc };
+
+        if (!followMyLocationRef.current && !userInteractedRef.current && !autoCenterDoneRef.current) {
+          autoCenterDoneRef.current = true;
+          try {
+            mapRef.current?.animateCamera?.({
+              center: { latitude: lat, longitude: lng },
+              zoom: 16,
+              duration: 450
+            });
+            onCenterChangeRef.current?.({ lat, lng });
+          } catch {
+            // ignore
+          }
+        }
+      }
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  const onTapMapStable = useCallback(() => closeBubble(), [closeBubble]);
+
+  const onCameraChangedStable = useCallback((e: any) => {
+    lastCameraReasonRef.current = (e?.reason as any) ?? null;
+
+    const z = Number(e?.zoom);
+    const b = Number(e?.bearing);
+    const t = Number(e?.tilt);
+
+    if (Number.isFinite(z) && z > 0) lastZoomRef.current = z;
+    if (Number.isFinite(b)) lastBearingRef.current = b;
+    if (Number.isFinite(t)) lastTiltRef.current = t;
+
+    if (e?.reason === "Gesture") {
+      userInteractedRef.current = true;
+      if (followMyLocationRef.current) setFollowMyLocation(false);
+    }
+  }, []);
+
+  const onCameraIdleStable = useCallback(
+    (camera: any) => {
+      const latD0 = Number(camera?.latitudeDelta);
+      const lngD0 = Number(camera?.longitudeDelta);
+
+      if (!Number.isFinite(latD0) || !Number.isFinite(lngD0) || latD0 <= 0 || lngD0 <= 0) {
+        const sp = selectedPinRef.current;
+        if (sp) updateBubblePosition(sp);
+        return;
+      }
+
+      const latD = clamp(latD0, 0.0005, 5);
+      const lngD = clamp(lngD0, 0.0005, 5);
+
+      const prev = deltaRef.current;
+      const changed =
+        Math.abs(prev.latitudeDelta - latD) > 1e-12 || Math.abs(prev.longitudeDelta - lngD) > 1e-12;
+
+      if (changed) {
+        deltaRef.current = { latitudeDelta: latD, longitudeDelta: lngD };
+      }
+
+      const wasGesture = lastCameraReasonRef.current === "Gesture";
+      if (wasGesture) userInteractedRef.current = true;
+
+      if (wasGesture && followMyLocationRef.current) {
+        setFollowMyLocation(false);
+      }
+
+      if (wasGesture) {
+        if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+        saveTimerRef.current = setTimeout(() => {
+          AsyncStorage.setItem(KEY_MAP_DELTA, JSON.stringify(deltaRef.current)).catch(() => {});
+        }, 250);
+      }
+
+      const sp = selectedPinRef.current;
+      if (sp) updateBubblePosition(sp);
+    },
+    [updateBubblePosition]
+  );
+
+  if (!bootRegion) {
+    return (
+      <View style={[styles.root, style]}>
+        <View style={styles.loadingRoot}>
+          <ActivityIndicator size="large" color="#FFFFFF" style={styles.loadingSpinner} />
+        </View>
+      </View>
+    );
+  }
+
+
   return (
     <View style={[styles.root, style]}>
-      <MapView
+      <NaverMapLayer
         ref={mapRef}
-        provider={PROVIDER_GOOGLE}
-        style={styles.map}
-        initialRegion={initialRegion}
-        showsUserLocation
-        showsMyLocationButton={false}
-        onMapReady={() => setMapReady(true)}
-        onPress={closeBubble}
-        customMapStyle={customMapStyle}
-        onUserLocationChange={(e: any) => {
-          const coord = e?.nativeEvent?.coordinate;
-          const lat = Number(coord?.latitude);
-          const lng = Number(coord?.longitude);
-          const acc = Number(coord?.accuracy);
+        initialRegion={bootRegion}
+        routeSegments={routeSegmentsWithMyLoc}
+        pins={pins}
+        shouldShowCenterMarker={shouldShowCenterMarker}
+        center={center}
+        isNightModeEnabled={isNightModeEnabled}
+        myLocation={myLocOverlay}
+        onInitialized={onInitializedStable}
+        onTapMap={onTapMapStable}
+        onCameraChanged={onCameraChangedStable}
+        onCameraIdle={onCameraIdleStable}
+        onTapPin={handlePressPin}
+      />
 
-          if (!isValidLatLng(lat, lng)) return;
-          if (Number.isFinite(acc) && acc > 2000) return;
-
-          lastUserCoordRef.current = { lat, lng, acc };
-
-          if (!mapReady) return;
-
-          if (followMyLocationRef.current) {
-            const now = Date.now();
-            if (now - lastFollowAnimAtRef.current < 650) return;
-
-            const prev = lastFollowCoordRef.current;
-            if (prev) {
-              const dLat = Math.abs(prev.lat - lat);
-              const dLng = Math.abs(prev.lng - lng);
-              if (dLat < 0.00002 && dLng < 0.00002) return;
-            }
-
-            lastFollowAnimAtRef.current = now;
-            lastFollowCoordRef.current = { lat, lng };
-            animateToUser(lat, lng, 450);
-            return;
-          }
-
-          if (userInteractedRef.current) return;
-          if (autoCenterDoneRef.current) return;
-
-          autoCenterDoneRef.current = true;
-
-          try {
-            mapRef.current?.animateToRegion?.(
-              {
-                latitude: lat,
-                longitude: lng,
-                latitudeDelta: deltaRef.current.latitudeDelta,
-                longitudeDelta: deltaRef.current.longitudeDelta
-              },
-              450
-            );
-          } catch {}
-        }}
-        onPanDrag={() => {
-          userInteractedRef.current = true;
-          if (followMyLocationRef.current) setFollowMyLocation(false);
-        }}
-        onRegionChangeComplete={(region: Region, details?: any) => {
-          const latD = clamp(region.latitudeDelta, 0.0005, 5);
-          const lngD = clamp(region.longitudeDelta, 0.0005, 5);
-
-          const prev = deltaRef.current;
-          if (Math.abs(prev.latitudeDelta - latD) > 1e-12 || Math.abs(prev.longitudeDelta - lngD) > 1e-12) {
-            const next = { latitudeDelta: latD, longitudeDelta: lngD };
-            deltaRef.current = next;
-            setDelta(next);
-          }
-
-          if (details?.isGesture) userInteractedRef.current = true;
-
-          if (details?.isGesture && followMyLocationRef.current) {
-            setFollowMyLocation(false);
-          }
-
-          if (details?.isGesture) {
-            if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
-            saveTimerRef.current = setTimeout(() => {
-              AsyncStorage.setItem(KEY_MAP_DELTA, JSON.stringify(deltaRef.current)).catch(() => {});
-            }, 250);
-          }
-
-          if (selectedPin) updateBubblePosition(selectedPin);
-        }}
-      >
-        {routeSegments.map((seg, i) => (
-          <Polyline key={`route_seg_${i}`} coordinates={seg.coords} strokeWidth={3} strokeColor={seg.color} />
-        ))}
-
-        {pins.map((pin) => (
-          <Marker key={pin.id} coordinate={{ latitude: pin.lat, longitude: pin.lng }} onPress={() => handlePressPin(pin)} />
-        ))}
-
-        {shouldShowCenterMarker && <Marker coordinate={{ latitude: center.lat, longitude: center.lng }} />}
-      </MapView>
-
-      <TouchableOpacity activeOpacity={0.88} onPress={handlePressMyLocation} style={styles.myLocBtn}>
-        <Ionicons name="locate" size={18} color="rgba(29,44,59,0.88)" />
-      </TouchableOpacity>
+      <View pointerEvents="box-none" style={StyleSheet.absoluteFill}>
+        <TouchableOpacity activeOpacity={0.88} onPress={handlePressMyLocation} style={styles.myLocBtn}>
+          <Ionicons name="locate" size={18} color="rgba(29,44,59,0.88)" />
+        </TouchableOpacity>
+      </View>
 
       {!!selectedPin && !!bubblePos && (
         <View pointerEvents="box-none" style={StyleSheet.absoluteFill}>
@@ -533,37 +1073,23 @@ export default function GoogleMap({
             >
               {bubblePos.placement === "below" && <View style={[styles.arrowUp]} />}
 
-              <View style={[styles.bubbleBox, { maxHeight: bubbleScrollMax }]}>
-                <TouchableOpacity
-                  activeOpacity={0.85}
-                  onPress={() => {
-                    setDeleteConfirmVisible(false);
-                    setEditVisible(v => {
-                      const next = !v;
-                      if (next) setEditText((selectedPin?.text ?? "").toString());
-                      return next;
-                    });
-                  }}
-                  style={styles.bubbleEditBtn}
-                >
-                  <Ionicons name="create-outline" size={18} color="rgba(29,44,59,0.75)" />
-                </TouchableOpacity>
+              {editVisible ? (
+                <View style={[styles.bubbleBox, { maxHeight: bubbleScrollMax }]}>
+                  <TouchableOpacity
+                    activeOpacity={0.85}
+                    onPress={() => {
+                      setEditVisible(false);
+                      setDeleteConfirmVisible((v) => !v);
+                    }}
+                    style={styles.bubbleTrashBtn}
+                  >
+                    <Ionicons name="trash-outline" size={18} color="rgba(29,44,59,0.75)" />
+                  </TouchableOpacity>
 
-                <TouchableOpacity
-                  activeOpacity={0.85}
-                  onPress={() => {
-                    setEditVisible(false);
-                    setDeleteConfirmVisible(v => !v);
-                  }}
-                  style={styles.bubbleTrashBtn}
-                >
-                  <Ionicons name="trash-outline" size={18} color="rgba(29,44,59,0.75)" />
-                </TouchableOpacity>
+                  {!!bubbleTime && <Text style={styles.bubbleTime}>{bubbleTime}</Text>}
 
-                {!!bubbleTime && <Text style={styles.bubbleTime}>{bubbleTime}</Text>}
-
-                {editVisible ? (
                   <TextInput
+                    autoFocus
                     value={editText}
                     onChangeText={setEditText}
                     multiline
@@ -573,17 +1099,7 @@ export default function GoogleMap({
                     placeholderTextColor="rgba(29,44,59,0.40)"
                     style={[styles.bubbleEditInput, { maxHeight: bubbleScrollMax - 84 }]}
                   />
-                ) : (
-                  <ScrollView
-                    style={styles.bubbleScroll}
-                    contentContainerStyle={styles.bubbleScrollContent}
-                    showsVerticalScrollIndicator
-                  >
-                    <Text style={styles.bubbleText}>{bubbleText.trim() || "(텍스트 없음)"}</Text>
-                  </ScrollView>
-                )}
 
-                {editVisible ? (
                   <View style={styles.bubbleConfirmRow}>
                     <TouchableOpacity
                       activeOpacity={0.85}
@@ -602,17 +1118,46 @@ export default function GoogleMap({
                         const next = (editText ?? "").toString();
                         try {
                           if (selectedPin && onUpdateMemoPin) await onUpdateMemoPin(selectedPin, next);
-                          setSelectedPin(p => (p ? { ...p, text: next } : p));
+                          setSelectedPin((p) => (p ? { ...p, text: next } : p));
                           setEditVisible(false);
-                        } catch {}
+                        } catch {
+                          // ignore
+                        }
                       }}
                       style={[styles.bubbleConfirmBtn, styles.bubbleConfirmBtnOk]}
                     >
                       <Text style={[styles.bubbleConfirmText, styles.bubbleConfirmTextOk]}>저장</Text>
                     </TouchableOpacity>
                   </View>
-                ) : (
-                  deleteConfirmVisible && (
+                </View>
+              ) : (
+                <TouchableOpacity
+                  activeOpacity={1}
+                  onPress={() => {
+                    setDeleteConfirmVisible(false);
+                    setEditVisible(true);
+                    setEditText((selectedPin?.text ?? "").toString());
+                  }}
+                  style={[styles.bubbleBox, { maxHeight: bubbleScrollMax }]}
+                >
+                  <TouchableOpacity
+                    activeOpacity={0.85}
+                    onPress={() => {
+                      setEditVisible(false);
+                      setDeleteConfirmVisible((v) => !v);
+                    }}
+                    style={styles.bubbleTrashBtn}
+                  >
+                    <Ionicons name="trash-outline" size={18} color="rgba(29,44,59,0.75)" />
+                  </TouchableOpacity>
+
+                  {!!bubbleTime && <Text style={styles.bubbleTime}>{bubbleTime}</Text>}
+
+                  <ScrollView style={styles.bubbleScroll} contentContainerStyle={styles.bubbleScrollContent} showsVerticalScrollIndicator>
+                    <Text style={styles.bubbleText}>{bubbleText.trim() || "(텍스트 없음)"}</Text>
+                  </ScrollView>
+
+                  {deleteConfirmVisible && (
                     <View style={styles.bubbleConfirmRow}>
                       <TouchableOpacity
                         activeOpacity={0.85}
@@ -636,9 +1181,9 @@ export default function GoogleMap({
                         <Text style={[styles.bubbleConfirmText, styles.bubbleConfirmTextOk]}>확인</Text>
                       </TouchableOpacity>
                     </View>
-                  )
-                )}
-              </View>
+                  )}
+                </TouchableOpacity>
+              )}
 
               {bubblePos.placement === "above" && <View style={[styles.arrowDown]} />}
             </View>
@@ -653,6 +1198,18 @@ const styles = StyleSheet.create({
   root: { flex: 1 },
   map: { ...StyleSheet.absoluteFillObject },
 
+  loadingRoot: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "#000000",
+    alignItems: "center",
+    justifyContent: "center",
+    zIndex: 999999,
+    elevation: 999999
+  },
+  loadingSpinner: {
+    transform: [{ scale: 1.15 }]
+  },
+
   myLocBtn: {
     position: "absolute",
     right: 14,
@@ -664,7 +1221,9 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     borderWidth: 1,
-    borderColor: "rgba(29,44,59,0.12)"
+    borderColor: "rgba(29,44,59,0.12)",
+    zIndex: 9999,
+    elevation: 9999
   },
 
   bubbleAnchor: {

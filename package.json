@@ -1,9 +1,12 @@
 {
   "dependencies": {
     "@expo/vector-icons": "^15.0.3",
+    "@mj-studio/react-native-naver-map": "^2.7.0",
     "@react-native-async-storage/async-storage": "^2.2.0",
     "expo": "54.0.33",
+    "expo-build-properties": "~1.0.10",
     "expo-constants": "~18.0.13",
+    "expo-location": "^19.0.8",
     "expo-navigation-bar": "~5.0.10",
     "expo-updates": "~29.0.16",
     "react": "19.1.0",
@@ -21,7 +24,7 @@
     "@types/react": "~19.1.10",
     "typescript": "~5.9.2"
   },
-  "name": "RiderMemoTracker",
+  "name": "ridermemotracker",
   "version": "1.0.0",
   "scripts": {
     "android": "expo run:android",

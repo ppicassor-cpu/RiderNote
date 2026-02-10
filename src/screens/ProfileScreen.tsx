@@ -1,8 +1,12 @@
-﻿import React, { useEffect, useMemo, useState, useCallback } from "react";
+﻿// FILE: C:\RiderNote\src\screens\ProfileScreen.tsx
+import React, { useEffect, useMemo, useState, useCallback } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { BackHandler, ScrollView, StyleSheet, Text, TouchableOpacity, View, Linking, Platform, NativeModules } from "react-native";
+import Purchases from "react-native-purchases";
+import { BannerAd, BannerAdSize, TestIds } from "react-native-google-mobile-ads";
+import { BackHandler, ScrollView, StyleSheet, Text, TouchableOpacity, View, Linking, Platform, NativeModules, Modal, TextInput, KeyboardAvoidingView } from "react-native";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import * as Updates from "expo-updates";
+import Constants from "expo-constants";
 
 import HelpScreen from "./HelpScreen";
 import AppInfoScreen from "./AppInfoScreen";
@@ -16,6 +20,8 @@ type Props = {
 };
 
 type Page = "main" | "help" | "info" | "terms" | "ads" | "subs";
+
+const CONTACT_EMAIL = "ppicassor@gmail.com";
 
 async function readPremiumFlag(): Promise<boolean> {
   const keys = ["isPremium", "premium", "hasPremium", "membershipPremium"];
@@ -35,12 +41,102 @@ export default function ProfileScreen({ onClose }: Props) {
   const insets = useSafeAreaInsets();
   const [page, setPage] = useState<Page>("main");
   const [isPremium, setIsPremium] = useState<boolean>(false);
+  const [isTrial, setIsTrial] = useState<boolean>(false);
 
   const { theme, themePref, setThemePref } = useAppTheme();
   const styles = useMemo(() => createStyles(theme), [theme]);
 
   const [updateBusy, setUpdateBusy] = useState(false);
   const [updateMsg, setUpdateMsg] = useState<string>("");
+
+  const [contactVisible, setContactVisible] = useState<boolean>(false);
+  const [contactText, setContactText] = useState<string>("");
+  const [contactSending, setContactSending] = useState<boolean>(false);
+
+  const appVersion = useMemo(() => {
+    const v =
+      (Constants as any)?.nativeAppVersion ??
+      Constants?.expoConfig?.version ??
+      (Constants as any)?.manifest?.version;
+    return v ? String(v) : "-";
+  }, []);
+
+  const buildVersion = useMemo(() => {
+    const c1 = (Constants as any)?.nativeBuildVersion;
+    const c2 = (Constants as any)?.expoConfig?.ios?.buildNumber;
+    const c3 = (Constants as any)?.expoConfig?.android?.versionCode;
+    const v = c1 ?? c2 ?? c3;
+    return v != null && String(v).length ? String(v) : "-";
+  }, []);
+
+  const getDeviceInfo = useCallback(() => {
+    const pc: any = (Platform as any).constants ?? (NativeModules as any).PlatformConstants ?? {};
+    const manufacturer = pc?.Manufacturer ?? pc?.manufacturer ?? "";
+    const brand = pc?.Brand ?? pc?.brand ?? "";
+    const model = pc?.Model ?? pc?.model ?? "";
+    const device = [manufacturer, brand, model].map((x) => String(x || "").trim()).filter(Boolean).join(" ").trim();
+    const os = `${Platform.OS} ${String(Platform.Version)}`;
+    return { device: device || "-", os: os || "-" };
+  }, []);
+
+  const getNowString = useCallback(() => {
+    try {
+      return new Date().toLocaleString("ko-KR", { hour12: false });
+    } catch {
+      return String(Date.now());
+    }
+  }, []);
+
+  const openContact = useCallback(() => {
+    setContactText("");
+    setContactVisible(true);
+  }, []);
+
+  const sendContactEmail = useCallback(async () => {
+    if (contactSending) return;
+    setContactSending(true);
+
+    try {
+      const when = getNowString();
+      const { device, os } = getDeviceInfo();
+
+      const subjectRaw = `[RiderNote 문의] ${when}`;
+      const meta =
+        `- 날짜: ${when}\n` +
+        `- 기종: ${device}\n` +
+        `- OS: ${os}\n` +
+        `- 앱버전: ${appVersion}\n` +
+        `- 빌드: ${buildVersion}\n\n`;
+
+      const bodyRaw =
+        `안녕하세요. RiderNote 문의입니다.\n\n` +
+        meta +
+        `【문의 내용】\n` +
+        `${(contactText ?? "").toString()}\n\n` +
+        `【추가 정보(선택)】\n- 재현 단계:\n- 기대 동작:\n- 실제 동작:\n`;
+
+      const subject = encodeURIComponent(subjectRaw);
+      const body = encodeURIComponent(bodyRaw);
+      const mailto = `mailto:${CONTACT_EMAIL}?subject=${subject}&body=${body}`;
+
+      try {
+        await Linking.openURL(mailto);
+        setContactVisible(false);
+        return;
+      } catch {}
+
+      try {
+        const gmailWeb = `https://mail.google.com/mail/?view=cm&fs=1&to=${encodeURIComponent(CONTACT_EMAIL)}&su=${subject}&body=${body}`;
+        await Linking.openURL(gmailWeb);
+        setContactVisible(false);
+        return;
+      } catch {
+        setUpdateMsg("메일 앱을 열 수 없습니다. 메일 앱 설치/설정 후 다시 시도해 주세요.");
+      }
+    } finally {
+      setContactSending(false);
+    }
+  }, [appVersion, buildVersion, contactSending, contactText, getDeviceInfo, getNowString]);
 
   useEffect(() => {
     const sub = BackHandler.addEventListener("hardwareBackPress", () => {
@@ -54,7 +150,46 @@ export default function ProfileScreen({ onClose }: Props) {
     let mounted = true;
     (async () => {
       const v = await readPremiumFlag();
-      if (mounted) setIsPremium(v);
+      if (mounted) {
+        setIsPremium(v);
+        setIsTrial(false);
+      }
+
+      try {
+        const info: any = await (Purchases as any).getCustomerInfo?.();
+        const active = info?.entitlements?.active ?? {};
+        const keys = Object.keys(active);
+
+        if (keys.length === 0) {
+          if (mounted) {
+            setIsPremium(false);
+            setIsTrial(false);
+          }
+          return;
+        }
+
+        let hasNonTrial = false;
+        let hasTrial = false;
+
+        for (const k of keys) {
+          const ent = active[k];
+          const pt = String(ent?.periodType ?? "").toUpperCase();
+          if (pt === "TRIAL") hasTrial = true;
+          else hasNonTrial = true;
+        }
+
+        const premiumActive = hasNonTrial;
+        const trialActive = !hasNonTrial && hasTrial;
+
+        if (mounted) {
+          setIsPremium(premiumActive);
+          setIsTrial(trialActive);
+        }
+
+        try {
+          await AsyncStorage.setItem("RIDERNOTE_IS_PREMIUM", premiumActive ? "1" : "0");
+        } catch {}
+      } catch {}
     })();
     return () => {
       mounted = false;
@@ -195,7 +330,11 @@ export default function ProfileScreen({ onClose }: Props) {
     );
   }
 
-  const bottomPad = insets.bottom + 18;
+  const bannerReserve = !isPremium ? 62 : 0;
+  const bottomPad = insets.bottom + 18 + bannerReserve;
+
+  const whenPreview = getNowString();
+  const dev = getDeviceInfo();
 
   return (
     <SafeAreaView style={styles.root} edges={["top", "left", "right", "bottom"]}>
@@ -214,13 +353,13 @@ export default function ProfileScreen({ onClose }: Props) {
           <Text style={styles.membershipTitle}>내 멤버쉽 등급</Text>
 
           <View style={styles.membershipRow}>
-            <Text style={styles.membershipValue}>{isPremium ? "Premium Membership" : "Free Membership"}</Text>
+            <Text style={styles.membershipValue}>{isTrial ? "무료체험중" : isPremium ? "Premium Membership" : "Free Membership"}</Text>
 
             <TouchableOpacity
               activeOpacity={0.88}
               onPress={() => setPage("ads")}
-              style={[styles.upgradeBtn, isPremium ? styles.upgradeBtnDisabled : null]}
-              disabled={isPremium}
+              style={[styles.upgradeBtn, (isPremium || isTrial) ? styles.upgradeBtnDisabled : null]}
+              disabled={isPremium || isTrial}
             >
               <Text style={styles.upgradeBtnText}>Buy Now</Text>
             </TouchableOpacity>
@@ -238,7 +377,7 @@ export default function ProfileScreen({ onClose }: Props) {
                 style={[styles.themePill, themePref === "system" ? styles.themePillOn : styles.themePillOff]}
               >
                 <Text style={[styles.themePillText, themePref === "system" ? styles.themePillTextOn : styles.themePillTextOff]}>
-                  시스템
+                  {themePref === "system" ? (theme.mode === "dark" ? "자동" : "자동") : "자동"}
                 </Text>
               </TouchableOpacity>
 
@@ -274,7 +413,7 @@ export default function ProfileScreen({ onClose }: Props) {
           <View style={styles.menuDivider} />
           <MenuRow title="약관 및 개인정보처리방침" onPress={() => setPage("terms")} styles={styles} />
           <View style={styles.menuDivider} />
-          <MenuRow title="구독관리" onPress={() => setPage("subs")} chevron="››" styles={styles} />
+          <MenuRow title="구독관리" onPress={() => setPage("subs")} chevron="›" styles={styles} />
 
           <View style={[styles.updateBar, { paddingBottom: 14 }]}>
             <TouchableOpacity
@@ -286,10 +425,81 @@ export default function ProfileScreen({ onClose }: Props) {
               <Text style={styles.updateBtnText}>{updateBusy ? "UPDATING..." : "UPDATE"}</Text>
             </TouchableOpacity>
 
+            <TouchableOpacity
+              activeOpacity={0.88}
+              onPress={openContact}
+              style={[styles.contactBtn, contactSending ? styles.contactBtnDisabled : null]}
+              disabled={contactSending}
+            >
+              <Text style={styles.contactBtnText}>문의하기</Text>
+            </TouchableOpacity>
+
             {updateMsg ? <Text style={styles.updateHint}>{updateMsg}</Text> : null}
           </View>
         </View>
       </ScrollView>
+
+      {!isPremium ? (
+        <View style={[styles.bannerDock, { paddingBottom: insets.bottom }]}>
+          <View style={styles.bannerBox}>
+            <BannerAd unitId={"ca-app-pub-5144004139813427/4269745317"} size={BannerAdSize.ANCHORED_ADAPTIVE_BANNER} />
+          </View>
+        </View>
+      ) : null}
+
+      <Modal transparent visible={contactVisible} animationType="fade" onRequestClose={() => setContactVisible(false)}>
+        <View style={styles.modalRoot}>
+          <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={styles.modalRoot}>
+
+            <View style={styles.modalOverlay} />
+
+            <View style={[styles.modalCard, { marginBottom: insets.bottom + 14 }]}>
+              <View style={styles.modalHeader}>
+                <Text style={styles.modalTitle}>문의하기</Text>
+
+                <TouchableOpacity activeOpacity={0.88} onPress={() => setContactVisible(false)} style={styles.modalCloseBtn}>
+                  <Text style={styles.modalCloseTxt}>닫기</Text>
+                </TouchableOpacity>
+              </View>
+
+              <View style={styles.modalMetaBox}>
+                <Text style={styles.modalMetaTxt}>날짜: {whenPreview}</Text>
+                <Text style={styles.modalMetaTxt}>기종: {dev.device}</Text>
+                <Text style={styles.modalMetaTxt}>OS: {dev.os}</Text>
+                <Text style={styles.modalMetaTxt}>앱버전: {appVersion} / 빌드: {buildVersion}</Text>
+                <Text style={styles.modalMetaTxt}>수신: {CONTACT_EMAIL}</Text>
+              </View>
+
+              <Text style={styles.modalLabel}>내용</Text>
+              <TextInput
+                value={contactText}
+                onChangeText={setContactText}
+                placeholder="문의 내용을 입력해 주세요. (재현 방법/상황을 적어주시면 해결이 빠릅니다)"
+                placeholderTextColor={theme.mode === "dark" ? "rgba(255,255,255,0.35)" : "rgba(29,44,59,0.35)"}
+                multiline
+                textAlignVertical="top"
+                style={styles.modalInput}
+              />
+
+              <View style={styles.modalBtnRow}>
+                <TouchableOpacity activeOpacity={0.88} onPress={() => setContactVisible(false)} style={styles.modalBtnGhost}>
+                  <Text style={styles.modalBtnGhostTxt}>취소</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  activeOpacity={0.88}
+                  onPress={sendContactEmail}
+                  style={[styles.modalBtnPrimary, contactSending ? styles.modalBtnPrimaryDisabled : null]}
+                  disabled={contactSending}
+                >
+                  <Text style={styles.modalBtnPrimaryTxt}>{contactSending ? "준비중..." : "메일로 전송"}</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+
+          </KeyboardAvoidingView>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -318,6 +528,10 @@ function createStyles(theme: AppTheme) {
   const pillOffBorder = theme.border;
   const pillOffText = theme.textSub;
 
+  const modalOverlayBg = theme.mode === "dark" ? "rgba(0,0,0,0.72)" : "rgba(0,0,0,0.55)";
+  const inputBg = theme.mode === "dark" ? "rgba(255,255,255,0.06)" : "rgba(29,44,59,0.06)";
+  const inputBorder = theme.mode === "dark" ? "rgba(255,255,255,0.10)" : "rgba(29,44,59,0.10)";
+
   return StyleSheet.create({
     root: { flex: 1, backgroundColor: theme.rootBg },
 
@@ -342,6 +556,19 @@ function createStyles(theme: AppTheme) {
     updateBtnDisabled: { opacity: 0.6 },
     updateBtnText: { color: theme.accentText, fontSize: 13, fontWeight: "900" },
     updateHint: { marginTop: 8, marginBottom: 2, color: theme.textMuted, fontSize: 11, lineHeight: 15, textAlign: "center" },
+
+    contactBtn: {
+      marginTop: 10,
+      height: 44,
+      borderRadius: 16,
+      alignItems: "center",
+      justifyContent: "center",
+      backgroundColor: theme.surfaceBg,
+      borderWidth: 1,
+      borderColor: theme.border
+    },
+    contactBtnDisabled: { opacity: 0.6 },
+    contactBtnText: { color: theme.text, fontSize: 13, fontWeight: "900" },
 
     header: {
       paddingHorizontal: 16,
@@ -380,6 +607,7 @@ function createStyles(theme: AppTheme) {
 
     upgradeBtn: {
       height: 34,
+      transform: [{ translateY: -17 }],
       paddingHorizontal: 14,
       borderRadius: 14,
       alignItems: "center",
@@ -433,6 +661,106 @@ function createStyles(theme: AppTheme) {
     },
     themePillText: { fontSize: 12, fontWeight: "700" },
     themePillTextOn: { color: theme.accentText },
-    themePillTextOff: { color: pillOffText }
+    themePillTextOff: { color: pillOffText },
+
+    bannerDock: {
+      paddingHorizontal: 16,
+      paddingTop: 10,
+      backgroundColor: theme.rootBg
+    },
+    bannerBox: {
+      minHeight: 50,
+      alignItems: "center",
+      justifyContent: "center"
+    },
+
+    modalRoot: { ...StyleSheet.absoluteFillObject, justifyContent: "center", alignItems: "center" },
+    modalOverlay: { ...StyleSheet.absoluteFillObject, backgroundColor: modalOverlayBg },
+    modalCard: {
+      width: "90%",
+      maxWidth: 420,
+      backgroundColor: theme.surfaceBg,
+      borderRadius: 18,
+      borderWidth: 1,
+      borderColor: theme.border,
+      padding: 14
+    },
+    modalHeader: {
+      height: 44,
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "space-between"
+    },
+    modalTitle: { color: theme.text, fontSize: 15, fontWeight: "900" },
+    modalCloseBtn: {
+      paddingHorizontal: 14,
+      height: 36,
+      borderRadius: 14,
+      alignItems: "center",
+      justifyContent: "center",
+      backgroundColor: theme.accentBg,
+      borderWidth: 1,
+      borderColor: theme.accentBorder
+    },
+    modalCloseTxt: { color: theme.accentText, fontSize: 12, fontWeight: "700" },
+
+    modalMetaBox: {
+      marginTop: 6,
+      borderRadius: 14,
+      borderWidth: 1,
+      borderColor: inputBorder,
+      backgroundColor: inputBg,
+      paddingHorizontal: 12,
+      paddingVertical: 10
+    },
+    modalMetaTxt: { color: theme.textSub, fontSize: 11, lineHeight: 16, fontWeight: "700" },
+
+    modalLabel: { marginTop: 12, color: theme.text, fontSize: 12, fontWeight: "900" },
+    modalInput: {
+      marginTop: 8,
+      minHeight: 140,
+      maxHeight: 260,
+      borderRadius: 14,
+      borderWidth: 1,
+      borderColor: inputBorder,
+      backgroundColor: inputBg,
+      paddingHorizontal: 12,
+      paddingVertical: 10,
+      color: theme.text,
+      fontSize: 12,
+      fontWeight: "700",
+      lineHeight: 17
+    },
+
+    modalBtnRow: {
+      marginTop: 12,
+      flexDirection: "row",
+      justifyContent: "flex-end",
+      gap: 10
+    },
+    modalBtnGhost: {
+      height: 40,
+      paddingHorizontal: 14,
+      borderRadius: 14,
+      alignItems: "center",
+      justifyContent: "center",
+      backgroundColor: theme.surfaceBg,
+      borderWidth: 1,
+      borderColor: theme.border
+    },
+    modalBtnGhostTxt: { color: theme.text, fontSize: 12, fontWeight: "900" },
+
+    modalBtnPrimary: {
+      height: 40,
+      paddingHorizontal: 14,
+      borderRadius: 14,
+      alignItems: "center",
+      justifyContent: "center",
+      backgroundColor: theme.accentBg,
+      borderWidth: 1,
+      borderColor: theme.accentBorder
+    },
+    modalBtnPrimaryDisabled: { opacity: 0.6 },
+    modalBtnPrimaryTxt: { color: theme.accentText, fontSize: 12, fontWeight: "900" }
   });
 }

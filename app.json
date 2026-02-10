@@ -15,15 +15,13 @@
     },
     "android": {
       "package": "com.ridernote",
-      "versionCode": 12, 
+      "versionCode": 17, 
+      "permissions": [
+        "com.google.android.gms.permission.AD_ID"
+      ],
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#ffffff"
-      },
-      "config": {
-        "googleMaps": {
-          "apiKey": "AIzaSyC2nZjkOauvpYqIaIAnpUDZPlEr7xir_jk"
-        }
       }
     },
     "androidNavigationBar": {
@@ -34,12 +32,37 @@
     "plugins": [
       "./plugins/withEdgeToEdgeOff",
       "./plugins/withRiderTracker",
+      "./plugins/withProguardRelease.cjs",
+      "./plugins/withProguardRulesCopy",      
       "./withAndroidSigning.js",
+      "./plugins/withNaverMapsClientId.cjs",
       [
         "react-native-google-mobile-ads",
         {
           "androidAppId": "ca-app-pub-5144004139813427~2657280749",
           "iosAppId": "ca-app-pub-3940256099942544~1458002511"
+        }
+      ],
+      [
+        "@mj-studio/react-native-naver-map",
+        {
+          "client_id": "1azmdmnk1m"
+        }
+      ],
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "extraMavenRepos": [
+              "https://repository.map.naver.com/archive/maven"
+            ]
+          }
+        }
+      ],
+      [
+        "expo-location",
+        {
+          "locationAlwaysAndWhenInUsePermission": "RiderNote가 위치를 사용하도록 허용하시겠어요?"
         }
       ]
     ],
@@ -47,7 +70,10 @@
       "enabled": true,
       "checkAutomatically": "ON_LOAD",
       "fallbackToCacheTimeout": 0,
-      "url": "https://u.expo.dev/db131583-e799-4791-aaba-95974d89f15d"
+      "url": "https://u.expo.dev/db131583-e799-4791-aaba-95974d89f15d",
+      "requestHeaders": {
+    "expo-channel-name": "production"
+  }
     },
     "runtimeVersion": "1.0.0",
     "extra": {

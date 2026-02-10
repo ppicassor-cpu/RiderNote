@@ -13,7 +13,9 @@ import {
   Text,
   TextInput,
   TouchableOpacity,
-  View
+  View,
+  KeyboardAvoidingView,
+  Keyboard
 } from "react-native";
 
 const TextAny: any = Text;
@@ -101,6 +103,15 @@ function fmtTime(ms?: number) {
 function numOrNull(x: any): number | null {
   const n = typeof x === "number" ? x : typeof x === "string" ? Number(x) : NaN;
   return Number.isFinite(n) ? n : null;
+}
+
+function isValidLatLng(lat: any, lng: any) {
+  const la = numOrNull(lat);
+  const lo = numOrNull(lng);
+  if (la === null || lo === null) return false;
+  if (Math.abs(la) > 90 || Math.abs(lo) > 180) return false;
+  if (Math.abs(la) <= 0.001 && Math.abs(lo) <= 0.001) return false; // 0,0 및 근접 무효
+  return true;
 }
 
 // ------------------------------------------------------------------
@@ -215,7 +226,7 @@ const ADMOB_INTERSTITIAL_UNIT_ID = "ca-app-pub-5144004139813427/1707268955";
 const REVCAT_ANDROID_API_KEY = "goog_mKQRTZhRVngtfitlRSyQlhjKAnC";
 const REVCAT_ENTITLEMENT_ID = "RiderNote Premium";
 
-const TWO_HOURS_MS = 2 * 60 * 60 * 1000;
+const TWO_HOURS_MS = 14 * 24 * 60 * 60 * 1000; // 2 * 60 * 60 * 1000; 나중에수정
 const BANNER_H = 50;
 const BANNER_GAP = 10;
 
@@ -241,11 +252,29 @@ function Main() {
   const [center, setCenter] = useState<Center>({ lat: 37.5665, lng: 126.978 });
   const [updateReady, setUpdateReady] = useState<boolean>(false);
 
+  const [keyboardH, setKeyboardH] = useState<number>(0);
+
+  useEffect(() => {
+    const subShow = Keyboard.addListener("keyboardDidShow", (e) => {
+      const h = Number((e as any)?.endCoordinates?.height ?? 0);
+      setKeyboardH(Number.isFinite(h) ? h : 0);
+    });
+    const subHide = Keyboard.addListener("keyboardDidHide", () => setKeyboardH(0));
+
+    return () => {
+      subShow.remove();
+      subHide.remove();
+    };
+  }, []);
+
   const [isPremium, setIsPremium] = useState<boolean>(false);
   const [isTrial, setIsTrial] = useState<boolean>(false);
 
   const [memos, setMemos] = useState<MemoItem[]>([]);
   const [route, setRoute] = useState<RoutePoint[]>([]);
+  const routeRef = useRef<RoutePoint[]>(route);
+  const routeWatchIdRef = useRef<any>(null);
+  const routePullRef = useRef<any>(null);
   const [homeSlot1, setHomeSlot1] = useState<SessionSnapshot | null>(null);
   const [manual, setManual] = useState<ManualLocationState>({ enabled: false, lat: 0, lng: 0, acc: 0 });
 
@@ -277,6 +306,7 @@ function Main() {
   const sessionLimitAtRef = useRef<number | null>(null);
   const extendModalLockRef = useRef<boolean>(false);
   const pendingInterstitialActionRef = useRef<null | "start" | "history">(null);
+  const pendingInterstitialShowOnlyRef = useRef<boolean>(false);
   const pendingRewardExtendRef = useRef<boolean>(false);
 
   const showAds = !isPremium; // 무료 + 무료체험(TRIAL) = 광고 노출
@@ -353,6 +383,10 @@ function Main() {
   }, [center]);
 
   useEffect(() => {
+    routeRef.current = route;
+  }, [route]);
+
+  useEffect(() => {
     mapViewRef.current = mapView;
   }, [mapView]);
 
@@ -392,6 +426,8 @@ function Main() {
   }, [mapView]);
 
   const setCenterStable = useCallback((lat: number, lng: number, force = false) => {
+    if (!isValidLatLng(lat, lng)) return;
+
     const prev = centerRef.current;
     if (!force) {
       const dLat = Math.abs(prev.lat - lat);
@@ -602,14 +638,23 @@ function Main() {
   const autoCenterOnce = useCallback(async () => {
     if (manual.enabled) return;
     if (autoCenteredRef.current) return;
-
     let did = false;
+    const isValid = (lat: number, lng: number) => {
+      return (
+        Number.isFinite(lat) &&
+        Number.isFinite(lng) &&
+        Math.abs(lat) <= 90 &&
+        Math.abs(lng) <= 180 &&
+        Math.abs(lat) > 0.001 &&
+        Math.abs(lng) > 0.001
+      );
+    };
     const setOnce = (lat: number, lng: number) => {
+      if (!isValid(lat, lng)) return;
       did = true;
       autoCenteredRef.current = true;
       setCenterStable(lat, lng, true);
     };
-
     try {
       const geo: any = (globalThis as any).navigator?.geolocation;
       if (geo && typeof geo.getCurrentPosition === "function") {
@@ -627,9 +672,7 @@ function Main() {
         });
       }
     } catch {}
-
     if (did) return;
-
     try {
       const last = await Tracker.getLastLocation();
       if (last && typeof last.lat === "number" && typeof last.lng === "number") {
@@ -719,8 +762,22 @@ function Main() {
     try {
       const arr: any[] = await Tracker.getRoute();
       const next = (arr || [])
-        .filter(p => typeof p?.lat === "number" && typeof p?.lng === "number")
+        .filter(p => typeof p?.lat === "number" && typeof p?.lng === "number" && isValidLatLng(p.lat, p.lng))
         .map(p => ({ lat: p.lat, lng: p.lng, t: p.t, acc: p.acc }));
+
+
+      const cur = routeRef.current || [];
+      if (cur.length > 0 && cur.length > next.length) {
+        if (next.length === 0) return;
+
+        const curLast = cur[cur.length - 1];
+        const nextLast = next[next.length - 1];
+
+        const curT = numOrNull((curLast as any)?.t) ?? 0;
+        const nextT = nextLast ? (numOrNull((nextLast as any)?.t) ?? 0) : 0;
+
+        if (curT > 0 && nextT > 0 && curT > nextT) return;
+      }
 
       const last = next[next.length - 1];
       const lastSig = last ? `${Number(last.lat).toFixed(6)}_${Number(last.lng).toFixed(6)}_${Number(last.t || 0)}` : "none";
@@ -786,14 +843,23 @@ function Main() {
 
       openPopup("종료하시겠습니까?", "앱을 종료할까요?", [
         { text: "취소", variant: "secondary" },
-        { text: "종료", variant: "primary", onPress: () => BackHandler.exitApp() }
+        {
+          text: "종료",
+          variant: "primary",
+          onPress: async () => {
+            if (isTracking) {
+              await onStop(true);
+            }
+            BackHandler.exitApp();
+          }
+        }
       ]);
       return true;
     };
 
     const sub = BackHandler.addEventListener("hardwareBackPress", onBackPress);
     return () => sub.remove();
-  }, [closePopup, historyVisible, openPopup, popup.visible, profileVisible, readSessionSlots, refreshAll]);
+  }, [closePopup, historyVisible, openPopup, popup.visible, profileVisible, readSessionSlots, refreshAll, isTracking, onStop]);
 
   const handleDeleteMemoPin = useCallback(
     async (pin: MemoPin) => {
@@ -997,6 +1063,18 @@ function Main() {
 
   useEffect(() => {
     if (!showAds) return;
+    if (!pendingInterstitialShowOnlyRef.current) return;
+    if (!interstitial.isLoaded) return;
+
+    pendingInterstitialShowOnlyRef.current = false;
+
+    try {
+      interstitial.show();
+    } catch {}
+  }, [showAds, interstitial.isLoaded]);
+
+  useEffect(() => {
+    if (!showAds) return;
     if (interstitial.isClosed) {
       try {
         interstitial.load();
@@ -1020,6 +1098,19 @@ function Main() {
       }
     }
   }, [showAds, interstitial.isClosed]);
+
+  useEffect(() => {
+    if (!showAds) return;
+    if (!pendingRewardExtendRef.current) return;
+    if (!rewardedInterstitial.isLoaded) return;
+
+    try {
+      rewardedInterstitial.show();
+    } catch {
+      pendingRewardExtendRef.current = false;
+      extendModalLockRef.current = false;
+    }
+  }, [showAds, rewardedInterstitial.isLoaded]);
 
   useEffect(() => {
     if (!showAds) return;
@@ -1067,6 +1158,8 @@ function Main() {
             text: "연장",
             variant: "primary",
             onPress: async () => {
+              pendingRewardExtendRef.current = true;
+
               if (!rewardedInterstitial.isLoaded) {
                 try {
                   rewardedInterstitial.load();
@@ -1074,8 +1167,6 @@ function Main() {
                 extendModalLockRef.current = false;
                 return;
               }
-
-              pendingRewardExtendRef.current = true;
 
               try {
                 rewardedInterstitial.show();
@@ -1219,6 +1310,97 @@ function Main() {
   }, [manual.enabled, refreshMemosSilent, refreshRouteSilent, setCenterStable]);
 
   useEffect(() => {
+    const geo: any = (globalThis as any).navigator?.geolocation;
+
+    if (!isTracking || manual.enabled) {
+      try {
+        if (geo && typeof geo.clearWatch === "function" && routeWatchIdRef.current != null) {
+          geo.clearWatch(routeWatchIdRef.current);
+        }
+      } catch {}
+      routeWatchIdRef.current = null;
+      return;
+    }
+
+    if (!geo || typeof geo.watchPosition !== "function") return;
+
+    const toRad = (d: number) => (d * Math.PI) / 180;
+    const haversineM = (a: { lat: number; lng: number }, b: { lat: number; lng: number }) => {
+      const R = 6371000;
+      const dLat = toRad(b.lat - a.lat);
+      const dLng = toRad(b.lng - a.lng);
+      const s1 = Math.sin(dLat / 2);
+      const s2 = Math.sin(dLng / 2);
+      const aa = s1 * s1 + Math.cos(toRad(a.lat)) * Math.cos(toRad(b.lat)) * s2 * s2;
+      const c = 2 * Math.atan2(Math.sqrt(aa), Math.sqrt(1 - aa));
+      const d = R * c;
+      return Number.isFinite(d) ? d : 0;
+    };
+
+    const id = geo.watchPosition(
+      (pos: any) => {
+        const lat = numOrNull(pos?.coords?.latitude);
+        const lng = numOrNull(pos?.coords?.longitude);
+        const acc = numOrNull(pos?.coords?.accuracy);
+        const t = numOrNull(pos?.timestamp) ?? Date.now();
+
+        if (lat === null || lng === null) return;
+        const isZero = Math.abs(lat) < 1e-8 && Math.abs(lng) < 1e-8;
+        if (isZero) return;
+        if (acc !== null && acc > 2000) return;
+
+        setCenterStable(lat, lng);
+
+        setRoute(prev => {
+          const last = prev[prev.length - 1];
+          if (last) {
+            const distM = haversineM({ lat: last.lat, lng: last.lng }, { lat, lng });
+            const lastT = numOrNull((last as any)?.t) ?? 0;
+            const dt = t - lastT;
+            if (distM < 2 && dt < 900) return prev;
+          }
+
+          const next = [...prev, { lat, lng, t, acc: acc ?? undefined }];
+          const lastSig = `${Number(lat).toFixed(6)}_${Number(lng).toFixed(6)}_${Number(t || 0)}`;
+          routeSigRef.current = `${next.length}_${lastSig}`;
+          return next;
+        });
+      },
+      () => {},
+      { enableHighAccuracy: true, timeout: 10000, maximumAge: 0, distanceFilter: 2 }
+    );
+
+    routeWatchIdRef.current = id;
+
+    return () => {
+      try {
+        if (geo && typeof geo.clearWatch === "function" && routeWatchIdRef.current != null) {
+          geo.clearWatch(routeWatchIdRef.current);
+        }
+      } catch {}
+      routeWatchIdRef.current = null;
+    };
+  }, [isTracking, manual.enabled, setCenterStable]);
+
+  useEffect(() => {
+    if (!isTracking) {
+      if (routePullRef.current) clearInterval(routePullRef.current);
+      routePullRef.current = null;
+      return;
+    }
+
+    if (routePullRef.current) clearInterval(routePullRef.current);
+    routePullRef.current = setInterval(() => {
+      refreshRouteSilent();
+    }, 8000);
+
+    return () => {
+      if (routePullRef.current) clearInterval(routePullRef.current);
+      routePullRef.current = null;
+    };
+  }, [isTracking, refreshRouteSilent]);
+
+  useEffect(() => {
     if (!isTracking) {
       if (pollRef.current) clearInterval(pollRef.current);
       pollRef.current = null;
@@ -1255,21 +1437,26 @@ function Main() {
         if (!manual.enabled) {
           const last = await Tracker.getLastLocation();
           if (last && typeof last.lat === "number" && typeof last.lng === "number") {
-            const curT = numOrNull((last as any)?.t) ?? nowMs;
-            const prev = lastLocRef.current;
+            const isZero = Math.abs(last.lat) < 1e-8 && Math.abs(last.lng) < 1e-8;
+            if (isZero) {
+              lastLocRef.current = null;
+            } else {
+              const curT = numOrNull((last as any)?.t) ?? nowMs;
+              const prev = lastLocRef.current;
 
-            if (prev) {
-              const distM = haversineM(prev, { lat: last.lat, lng: last.lng });
-              const dtS = Math.max(0.001, (curT - prev.t) / 1000);
-              const speedMps = distM / dtS;
+              if (prev) {
+                const distM = haversineM(prev, { lat: last.lat, lng: last.lng });
+                const dtS = Math.max(0.001, (curT - prev.t) / 1000);
+                const speedMps = distM / dtS;
 
-              if (speedMps >= 1.2 || distM >= 15) desired = "fast";
-              else if (speedMps <= 0.3 && distM <= 5) desired = "slow";
+                if (speedMps >= 1.2 || distM >= 15) desired = "fast";
+                else if (speedMps <= 0.3 && distM <= 5) desired = "slow";
+              }
+
+              lastLocRef.current = { lat: last.lat, lng: last.lng, t: curT };
+
+              setCenterStable(last.lat, last.lng);
             }
-
-            lastLocRef.current = { lat: last.lat, lng: last.lng, t: curT };
-
-            setCenterStable(last.lat, last.lng);
           }
         }
       } catch {}
@@ -1301,7 +1488,6 @@ function Main() {
       } catch {}
 
       await refreshMemosSilent();
-      await refreshRouteSilent();
     };
 
     pollRef.current = setInterval(tick, currentIntervalMs);
@@ -1310,7 +1496,7 @@ function Main() {
       if (pollRef.current) clearInterval(pollRef.current);
       pollRef.current = null;
     };
-  }, [isTracking, manual.enabled, refreshMemosSilent, refreshRouteSilent, setCenterStable]);
+  }, [isTracking, manual.enabled, refreshMemosSilent, setCenterStable]);
 
   const hideBubble = useCallback(async () => {
     const fns = [
@@ -1365,7 +1551,7 @@ function Main() {
     }
   };
 
-    async function onStop() {
+    async function onStop(silent?: boolean) {
     try {
       setStatus("종료 중...");
 
@@ -1476,10 +1662,17 @@ function Main() {
       const lines = [`총 거리: ${km.toFixed(2)}km`, `총 시간: ${min.toFixed(1)}분`, `총 메모: ${memoCount}개`];
 
       await refreshAll();
-      openPopup("오늘 기록 완료", lines.join("\n"), [{ text: "확인", variant: "primary" }]);
+      if (!silent) {
+        openPopup("오늘 기록 완료", lines.join("\n"), [{ text: "확인", variant: "primary" }]);
+      }
     } catch (e: any) {
-      setStatus("기록 중");
-      openPopup("종료가 안 됐어요 🥲", String(e?.message ?? e));
+      try {
+        await hideBubble();
+      } catch {}
+      if (!silent) {
+        setStatus("기록 중");
+        openPopup("종료가 안 됐어요 🥲", String(e?.message ?? e));
+      }
     }
   }
 
@@ -1512,32 +1705,39 @@ function Main() {
   }, [isTracking, sessionId, homeSlot1]);
 
   const memoPinMeta = useMemo(() => {
-    return displayMemos
-      .filter(m => typeof (m as any)?.lat === "number" && typeof (m as any)?.lng === "number")
+    return (memos || [])
       .map((m: any, i: number) => {
-        const id = `${m.sessionId ?? "s"}_${m.savedAt ?? 0}_${i}`;
+        const lat = numOrNull((m as any)?.lat);
+        const lng = numOrNull((m as any)?.lng);
+        if (lat === null || lng === null || !isValidLatLng(lat, lng)) return null;
+
+        const savedAt = numOrNull((m as any)?.savedAt);
+
+        const id = `${m.sessionId ?? "s"}_${savedAt ?? 0}_${i}`;
         const fullText = (m.text ?? "").toString();
         const oneLine = fullText.replace(/\s+/g, " ").trim();
         const previewText = oneLine.length > 24 ? oneLine.slice(0, 24) + "…" : oneLine;
 
         return {
           id,
-          lat: m.lat as number,
-          lng: m.lng as number,
+          lat,
+          lng,
           text: fullText,
           previewText,
           fullText,
-          savedAt: typeof m.savedAt === "number" ? m.savedAt : undefined,
+          savedAt: savedAt ?? undefined,
           sessionId: m.sessionId
         };
-      });
-  }, [displayMemos]);
+      })
+      .filter((x: any) => !!x);
+  }, [memos]);
+
 
   const memoPins = useMemo(() => memoPinMeta as unknown as MemoPin[], [memoPinMeta]);
 
   const memoSummary = useMemo(() => {
-    return `총 메모 ${displayMemos.length}개`;
-  }, [displayMemos.length]);
+    return `총 메모 ${memos.length}개`;
+  }, [memos.length]);
 
   const fitSessionKey = useMemo(() => {
     if (!displaySessionId) return undefined;
@@ -1547,9 +1747,9 @@ function Main() {
 
 
   const statusLabel = useMemo(() => {
-    if (isTracking) return "기록중입니다.";
-    if (status === "대기") return "대기중입니다.";
-    return "대기중입니다.";
+    if (isTracking) return "기록중 ⏲";
+    if (status === "대기") return "기록 대기중";
+    return "기록 대기중";
   }, [isTracking, status]);
 
   const GoogleMapAny = GoogleMap as any;
@@ -1558,6 +1758,12 @@ function Main() {
     <SafeAreaView style={styles.root} edges={["top", "left", "right"]}>
       <StatusBar barStyle={statusBarStyle} backgroundColor={theme.statusBarBg} />
 
+      <KeyboardAvoidingView
+        style={{ flex: 1 }}
+        enabled={Platform.OS === "ios"}
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
+        keyboardVerticalOffset={Platform.OS === "android" ? (StatusBar.currentHeight ?? 0) : 0}
+      >
       {profileVisible ? (
         <ProfileScreen
           onClose={async () => {
@@ -1616,6 +1822,14 @@ function Main() {
                         return;
                       } catch {}
                     }
+
+                    if (showAds && !interstitial.isLoaded) {
+                      pendingInterstitialShowOnlyRef.current = true;
+                      try {
+                        interstitial.load();
+                      } catch {}
+                    }
+
                     await refreshAll(true);
                     setHistoryVisible(true);
                   }}
@@ -1631,28 +1845,21 @@ function Main() {
             </View>
           </View>
 
-          <View style={[styles.mapWrap, { marginBottom: bottomBarReserve }]}>
+          <View style={[styles.mapWrap, { marginBottom: Math.max(0, bottomBarReserve - keyboardH) }]}>
             <GoogleMapAny
               center={center}
               style={StyleSheet.absoluteFill}
+              isNightModeEnabled={theme.mode === "dark"}
               route={displayRoute}
               memoPins={memoPins}
               onDeleteMemoPin={handleDeleteMemoPin}
               onUpdateMemoPin={handleUpdateMemoPin}
               fitSessionId={fitSessionKey}
-              zoom={mapView.zoom}
-              initialZoom={mapView.zoom}
-              latDelta={mapView.latDelta}
-              lngDelta={mapView.lngDelta}
-              onViewStateChange={handleMapViewChange}
-              onZoomChanged={handleMapViewChange}
-              onCameraChanged={handleMapViewChange}
-              onRegionChangeComplete={handleMapViewChange}
-              customMapStyle={theme.mode === "dark" ? DARK_MAP_STYLE : undefined}
+              onCenterChange={(newCenter: Center) => setCenter(newCenter)}
             />
           </View>
 
-          <View style={[styles.bottomBar, { paddingBottom: bottomPad }]}>
+          <View style={[styles.bottomBar, { paddingBottom: bottomPad, bottom: -keyboardH }]}>
             <View style={styles.bottomRow}>
               <TouchableOpacity
                 activeOpacity={0.88}
@@ -1670,15 +1877,22 @@ function Main() {
                     } catch {}
                   }
 
+                  if (showAds && !interstitial.isLoaded) {
+                    pendingInterstitialShowOnlyRef.current = true;
+                    try {
+                      interstitial.load();
+                    } catch {}
+                  }
+
                   await onStart();
                 }}
                 style={[styles.btn, isTracking ? styles.btnStop : styles.btnStart]}
               >
-                <Text style={styles.btnText}>{isTracking ? "기록완료" : "기록시작"}</Text>
+                <Text style={styles.btnText}>{isTracking ? "저장성공" : "출발하기"}</Text>
               </TouchableOpacity>
             </View>
             <Text style={styles.hint}>
-              홈 지도에 핀이 계속 표시됩니다. 핀을 탭하면 지도에서 바로 메모를 확인할 수 있어요. (경로/핀은 자동으로 화면에 맞춰집니다)
+              홈 지도에 핀이 계속 표시됩니다. 핀을 탭하면 지도에서 바로 메모를 확인할 수 있어요.
             </Text>
 
             {showAds ? (
@@ -1693,6 +1907,7 @@ function Main() {
           </View>
         </>
       )}
+      </KeyboardAvoidingView>
 
       {permGateVisible && <PermissionGate perm={perm} onFix={runPermissionFixFlow} styles={styles} />}
       <AlertPopup state={popup} onClose={closePopup} styles={styles} />
@@ -1872,32 +2087,3 @@ function createStyles(theme: AppTheme) {
     popupSticker: { fontSize: 16 }
   });
 }
-
-const DARK_MAP_STYLE = [
-  { elementType: "geometry", stylers: [{ color: "#1d2c4d" }] },
-  { elementType: "labels.text.fill", stylers: [{ color: "#8ec3b9" }] },
-  { elementType: "labels.text.stroke", stylers: [{ color: "#1a3646" }] },
-  { featureType: "administrative.country", elementType: "geometry.stroke", stylers: [{ color: "#4b6878" }] },
-  { featureType: "administrative.land_parcel", elementType: "labels.text.fill", stylers: [{ color: "#64779e" }] },
-  { featureType: "administrative.province", elementType: "geometry.stroke", stylers: [{ color: "#4b6878" }] },
-  { featureType: "landscape.man_made", elementType: "geometry.stroke", stylers: [{ color: "#334e87" }] },
-  { featureType: "landscape.natural", elementType: "geometry", stylers: [{ color: "#023e58" }] },
-  { featureType: "poi", elementType: "geometry", stylers: [{ color: "#283d6a" }] },
-  { featureType: "poi", elementType: "labels.text.fill", stylers: [{ color: "#6f9ba5" }] },
-  { featureType: "poi", elementType: "labels.text.stroke", stylers: [{ color: "#1d2c4d" }] },
-  { featureType: "poi.park", elementType: "geometry.fill", stylers: [{ color: "#023e58" }] },
-  { featureType: "poi.park", elementType: "labels.text.fill", stylers: [{ color: "#3C7680" }] },
-  { featureType: "road", elementType: "geometry", stylers: [{ color: "#304a7d" }] },
-  { featureType: "road", elementType: "labels.text.fill", stylers: [{ color: "#98a5be" }] },
-  { featureType: "road", elementType: "labels.text.stroke", stylers: [{ color: "#1d2c4d" }] },
-  { featureType: "road.highway", elementType: "geometry", stylers: [{ color: "#2c6675" }] },
-  { featureType: "road.highway", elementType: "geometry.stroke", stylers: [{ color: "#255763" }] },
-  { featureType: "road.highway", elementType: "labels.text.fill", stylers: [{ color: "#b0d5ce" }] },
-  { featureType: "road.highway", elementType: "labels.text.stroke", stylers: [{ color: "#023e58" }] },
-  { featureType: "transit", elementType: "labels.text.fill", stylers: [{ color: "#98a5be" }] },
-  { featureType: "transit", elementType: "labels.text.stroke", stylers: [{ color: "#1d2c4d" }] },
-  { featureType: "transit.line", elementType: "geometry.fill", stylers: [{ color: "#283d6a" }] },
-  { featureType: "transit.station", elementType: "geometry", stylers: [{ color: "#3a4762" }] },
-  { featureType: "water", elementType: "geometry", stylers: [{ color: "#0e1626" }] },
-  { featureType: "water", elementType: "labels.text.fill", stylers: [{ color: "#4e6d70" }] }
-];

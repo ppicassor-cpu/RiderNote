@@ -1,0 +1,2 @@
+﻿C:\RiderNote\android\app\src\main\AndroidManifest.xml:26:    <meta-data android:name="com.naver.maps.map.CLIENT_ID" android:value="1azmdmnk1m"/>
+C:\RiderNote\android\app\src\main\AndroidManifest.xml:27:    <meta-data android:name="com.naver.maps.map.NCP_KEY_ID" android:value="1azmdmnk1m"/>

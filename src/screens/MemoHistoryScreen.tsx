@@ -3,7 +3,7 @@ import React, { useEffect, useMemo, useRef, useState, useCallback } from "react"
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { BackHandler, Platform, StatusBar, StyleSheet, Text, TouchableOpacity, View, FlatList } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import MapView, { Marker, Polyline, PROVIDER_GOOGLE } from "react-native-maps";
+import { NaverMapView, NaverMapMarkerOverlay, NaverMapPolylineOverlay } from "@mj-studio/react-native-naver-map";
 import type { RoutePoint } from "../components/GoogleMap";
 import type { MemoItem } from "../native/NativeTracker";
 import { useAppTheme } from "../theme/ThemeProvider";
@@ -296,16 +296,24 @@ export default function MemoHistoryScreen({ memos, route, sessionId, onClose }: 
   const styles = useMemo(() => createStyles(palette), [palette]);
   const barStyle = palette.isDark ? "light-content" : "dark-content";
 
-  const mapRef = useRef<MapView | null>(null);
+  const mapRef = useRef<any>(null);
   const listRef = useRef<FlatList<ListItem> | null>(null);
 
-  const MapViewAny = MapView as any;
-  const MarkerAny = Marker as any;
-  const PolylineAny = Polyline as any;
+  const MapViewAny = NaverMapView as any;
+  const MarkerAny = NaverMapMarkerOverlay as any;
+  const PathAny = NaverMapPolylineOverlay as any;
   const FlatListAny = FlatList as any;
 
   const SESSION_SLOTS_KEY = "session_slots_v1";
   const MEMO_TEXT_OVERRIDES_KEY = "memo_text_overrides_v1";
+  const MEMO_HISTORY_MAP_ZOOM_KEY = "memo_history_map_zoom_v1";
+
+  const DEFAULT_MAP_ZOOM = 15;
+
+  const [mapZoomLoaded, setMapZoomLoaded] = useState(false);
+  const initialZoomRef = useRef<number>(DEFAULT_MAP_ZOOM);
+  const saveZoomTimerRef = useRef<any>(null);
+  const hasStoredZoomRef = useRef<boolean>(false);
 
   const [memoOverrides, setMemoOverrides] = useState<Record<string, string>>({});
 
@@ -500,6 +508,39 @@ export default function MemoHistoryScreen({ memos, route, sessionId, onClose }: 
     return segs;
   }, [sampledRoute]);
 
+  const startEnd = useMemo(() => {
+    const isOk = (lat: any, lng: any) =>
+      typeof lat === "number" &&
+      typeof lng === "number" &&
+      Number.isFinite(lat) &&
+      Number.isFinite(lng) &&
+      Math.abs(lat) <= 90 &&
+      Math.abs(lng) <= 180 &&
+      Math.abs(lat) > 0.001 &&
+      Math.abs(lng) > 0.001;
+
+    let start: { lat: number; lng: number } | null = null;
+    let end: { lat: number; lng: number } | null = null;
+
+    for (let i = 0; i < sampledRoute.length; i++) {
+      const p: any = sampledRoute[i];
+      if (isOk(p?.lat, p?.lng)) {
+        start = { lat: p.lat, lng: p.lng };
+        break;
+      }
+    }
+
+    for (let i = sampledRoute.length - 1; i >= 0; i--) {
+      const p: any = sampledRoute[i];
+      if (isOk(p?.lat, p?.lng)) {
+        end = { lat: p.lat, lng: p.lng };
+        break;
+      }
+    }
+
+    return { start, end };
+  }, [sampledRoute]);
+
   const initialRegion = useMemo(() => {
     const firstRoute = sampledRoute.find(p => typeof (p as any)?.lat === "number" && typeof (p as any)?.lng === "number") as any;
     const firstPin = pinItems[0];
@@ -516,12 +557,56 @@ export default function MemoHistoryScreen({ memos, route, sessionId, onClose }: 
   }, [sampledRoute, pinItems]);
 
   const didFitRef = useRef<boolean>(false);
+  const didFitInitRef = useRef<boolean>(false);
 
   useEffect(() => {
+    if (!didFitInitRef.current) {
+      didFitInitRef.current = true;
+      return;
+    }
     didFitRef.current = false;
   }, [activeSessionId, selectedSlot]);
 
   useEffect(() => {
+    let mounted = true;
+
+    (async () => {
+      try {
+        const s = await AsyncStorage.getItem(MEMO_HISTORY_MAP_ZOOM_KEY);
+        const z = s ? Number(JSON.parse(s)) : NaN;
+
+        if (Number.isFinite(z) && z > 0) {
+          hasStoredZoomRef.current = true;
+          initialZoomRef.current = z;
+
+          // 저장된 줌이 있으면, 첫 진입에서는 자동 fit이 줌을 덮어쓰지 않도록 막음
+          didFitRef.current = true;
+        } else {
+          hasStoredZoomRef.current = false;
+          initialZoomRef.current = DEFAULT_MAP_ZOOM;
+        }
+      } catch {
+        hasStoredZoomRef.current = false;
+        initialZoomRef.current = DEFAULT_MAP_ZOOM;
+      } finally {
+        if (mounted) setMapZoomLoaded(true);
+      }
+    })();
+
+    return () => {
+      mounted = false;
+      if (saveZoomTimerRef.current) clearTimeout(saveZoomTimerRef.current);
+      saveZoomTimerRef.current = null;
+
+      const z = initialZoomRef.current;
+      if (Number.isFinite(z) && z > 0) {
+        AsyncStorage.setItem(MEMO_HISTORY_MAP_ZOOM_KEY, JSON.stringify(z)).catch(() => {});
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!mapZoomLoaded) return;
     if (didFitRef.current) return;
 
     const coords: { latitude: number; longitude: number }[] = [];
@@ -536,13 +621,25 @@ export default function MemoHistoryScreen({ memos, route, sessionId, onClose }: 
     didFitRef.current = true;
     requestAnimationFrame(() => {
       try {
-        (mapRef.current as any)?.fitToCoordinates(coords, {
-          edgePadding: { top: 80, right: 50, bottom: 220, left: 50 },
-          animated: true
+        const lats = coords.map(c => c.latitude);
+        const lngs = coords.map(c => c.longitude);
+        const minLat = Math.min(...lats);
+        const maxLat = Math.max(...lats);
+        const minLng = Math.min(...lngs);
+        const maxLng = Math.max(...lngs);
+
+        (mapRef.current as any)?.animateCameraWithTwoCoords({
+          coord1: { latitude: minLat, longitude: minLng },
+          coord2: { latitude: maxLat, longitude: maxLng },
+          paddingTop: 80,
+          paddingRight: 50,
+          paddingBottom: 220,
+          paddingLeft: 50,
+          duration: 350
         });
       } catch {}
     });
-  }, [sampledRoute, pinItems]);
+  }, [mapZoomLoaded, sampledRoute, pinItems]);
 
   const idToIndex = useMemo(() => {
     const m = new Map<string, number>();
@@ -570,10 +667,28 @@ export default function MemoHistoryScreen({ memos, route, sessionId, onClose }: 
     selectById(it.id);
     if (typeof it.lat === "number" && typeof it.lng === "number") {
       try {
-        (mapRef.current as any)?.animateCamera({ center: { latitude: it.lat, longitude: it.lng }, zoom: 16 }, { duration: 350 });
+        (mapRef.current as any)?.animateCameraTo({ latitude: it.lat, longitude: it.lng, zoom: 16, duration: 350 });
       } catch {}
     }
   };
+
+  const onCameraChangedStable = useCallback((e: any) => {
+    const reason = (e?.reason as any) ?? null;
+    const z = Number(e?.zoom);
+
+    if (!Number.isFinite(z) || z <= 0) return;
+
+    // 마지막 줌은 ref에 계속 반영(언마운트 시 최종 저장에도 사용)
+    initialZoomRef.current = z;
+
+    const canSave = reason === "Gesture" || reason === null;
+    if (!canSave) return;
+
+    if (saveZoomTimerRef.current) clearTimeout(saveZoomTimerRef.current);
+    saveZoomTimerRef.current = setTimeout(() => {
+      AsyncStorage.setItem(MEMO_HISTORY_MAP_ZOOM_KEY, JSON.stringify(z)).catch(() => {});
+    }, 250);
+  }, []);
 
   const slotButtonMeta = useMemo(() => {
     const isEmpty = (d: SlotData | null) => !d || ((d.memos?.length ?? 0) === 0 && (d.route?.length ?? 0) === 0);
@@ -759,21 +874,39 @@ export default function MemoHistoryScreen({ memos, route, sessionId, onClose }: 
 
       <View style={styles.body}>
         <View style={styles.mapBox}>
-          <MapViewAny
-            ref={mapRef}
-            style={StyleSheet.absoluteFill}
-            initialRegion={initialRegion}
-            provider={Platform.OS === "android" ? PROVIDER_GOOGLE : undefined}
-            customMapStyle={palette.isDark ? DARK_MAP_STYLE : undefined}
-          >
-            {routeSegments.map(seg => (
-              <PolylineAny key={seg.key} coordinates={seg.coords} strokeWidth={3} strokeColor={seg.color} />
-            ))}
+          {mapZoomLoaded ? (
+            <MapViewAny
+              ref={mapRef}
+              style={StyleSheet.absoluteFill}
+              initialCamera={{ latitude: initialRegion.latitude, longitude: initialRegion.longitude, zoom: initialZoomRef.current }}
+              mapType={palette.isDark ? "Navi" : "Basic"}
+              isNightModeEnabled={palette.isDark}
+              onCameraChanged={onCameraChangedStable}
+            >
+              {routeSegments.map(seg => (
+                <PathAny key={seg.key} coords={seg.coords} width={3} color={seg.color} />
+              ))}
 
-            {pinItems.map(p => (
-              <MarkerAny key={p.id} coordinate={{ latitude: p.lat, longitude: p.lng }} onPress={() => onPinPress(p.id)} />
-            ))}
-          </MapViewAny>
+              {startEnd.start ? (
+                <MarkerAny latitude={startEnd.start.lat} longitude={startEnd.start.lng} image={{ symbol: "lightblue" }} />
+              ) : null}
+
+              {startEnd.end ? (
+                <MarkerAny
+                  latitude={startEnd.end.lat}
+                  longitude={startEnd.end.lng}
+                  image={{ httpUri: "https://twemoji.maxcdn.com/v/latest/72x72/1f6f5.png" }}
+                  width={28}
+                  height={28}
+                  anchor={{ x: 0.5, y: 0.5 }}
+                />
+              ) : null}
+
+              {pinItems.map(p => (
+                <MarkerAny key={p.id} latitude={p.lat} longitude={p.lng} onTap={() => onPinPress(p.id)} />
+              ))}
+            </MapViewAny>
+          ) : null}
         </View>
 
         <View style={[styles.listBox, { paddingBottom: insets.bottom + 12 }]}>

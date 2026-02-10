@@ -1,5 +1,5 @@
 ﻿// FILE: C:\RiderNote\src\screens\AppInfoScreen.tsx
-import React, { useMemo } from "react";
+import React, { useMemo, useState } from "react";
 import Constants from "expo-constants";
 import {
   ScrollView,
@@ -12,6 +12,10 @@ import {
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { Theme as AppTheme, useAppTheme } from "../theme/ThemeProvider";
 
+import HelpScreen from "./HelpScreen";
+import TermsPrivacyScreen from "./TermsPrivacyScreen";
+import SubscriptionManageScreen from "./SubscriptionManageScreen";
+
 type Props = {
   onBack: () => void;
   onClose: () => void;
@@ -20,8 +24,10 @@ type Props = {
   onOpenSubs?: () => void;
 };
 
-const CONTACT_EMAIL = "support@ridernote.app";
+const CONTACT_EMAIL = "ppicassor@gmail.com";
 const DEVELOPER_NAME = "RiderNote";
+
+type Page = "info" | "terms" | "help" | "subs";
 
 export default function AppInfoScreen({
   onBack,
@@ -34,6 +40,8 @@ export default function AppInfoScreen({
   const { theme } = useAppTheme();
   const styles = useMemo(() => createStyles(theme), [theme]);
   const statusBarStyle = theme.mode === "dark" ? "light-content" : "dark-content";
+
+  const [page, setPage] = useState<Page>("info");
 
   const bottomPad = insets.bottom + 26;
 
@@ -53,24 +61,60 @@ export default function AppInfoScreen({
     return v != null && String(v).length ? String(v) : "-";
   }, []);
 
+  const handleBack = () => {
+    if (page !== "info") {
+      setPage("info");
+      return;
+    }
+    onBack();
+  };
+
   const openTerms = () => {
-    onOpenTerms?.();
+    if (onOpenTerms) {
+      onOpenTerms();
+      return;
+    }
+    setPage("terms");
   };
 
   const openHelp = () => {
-    onOpenHelp?.();
+    if (onOpenHelp) {
+      onOpenHelp();
+      return;
+    }
+    setPage("help");
   };
 
   const openSubs = () => {
-    onOpenSubs?.();
+    if (onOpenSubs) {
+      onOpenSubs();
+      return;
+    }
+    setPage("subs");
   };
+
+  const HelpAny: any = HelpScreen as any;
+  const TermsAny: any = TermsPrivacyScreen as any;
+  const SubsAny: any = SubscriptionManageScreen as any;
+
+  if (page === "terms") {
+    return <TermsAny onBack={() => setPage("info")} onClose={onClose} />;
+  }
+
+  if (page === "help") {
+    return <HelpAny onBack={() => setPage("info")} onClose={onClose} />;
+  }
+
+  if (page === "subs") {
+    return <SubsAny onBack={() => setPage("info")} onClose={onClose} />;
+  }
 
   return (
     <SafeAreaView style={styles.safe} edges={["top", "left", "right", "bottom"]}>
       <StatusBar barStyle={statusBarStyle} backgroundColor={theme.statusBarBg} />
 
       <View style={styles.header}>
-        <TouchableOpacity onPress={onBack} activeOpacity={0.85} style={styles.backBtn}>
+        <TouchableOpacity onPress={handleBack} activeOpacity={0.85} style={styles.backBtn}>
           <Text style={styles.backTxt}>‹</Text>
         </TouchableOpacity>
 
@@ -231,14 +275,15 @@ function createStyles(theme: AppTheme) {
     backTxt: { color: backColor, fontSize: 24, fontWeight: "700" },
     headerTitle: { flex: 1, textAlign: "center", color: theme.text, fontSize: 15, fontWeight: "700" },
     closeBtn: {
-      width: 44,
+      paddingHorizontal: 14,
       height: 36,
-      borderRadius: 12,
+      borderRadius: 14,
       alignItems: "center",
       justifyContent: "center",
       backgroundColor: theme.accentBg,
       borderWidth: 1,
-      borderColor: theme.accentBorder
+      borderColor: theme.accentBorder,
+      marginRight: 2
     },
     closeTxt: { color: theme.accentText, fontSize: 12, fontWeight: "700" },
 

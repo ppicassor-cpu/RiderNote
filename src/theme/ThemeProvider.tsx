@@ -1,7 +1,7 @@
 ﻿// FILE: C:\RiderNote\src\theme\ThemeProvider.tsx
-import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { Platform, useColorScheme } from "react-native";
+import { AppState, AppStateStatus, Platform, useColorScheme } from "react-native";
 import * as NavigationBar from "expo-navigation-bar";
 
 export type ThemeMode = "light" | "dark";
@@ -195,6 +195,28 @@ function normalizeThemePref(raw: any): ThemePref | null {
   return null;
 }
 
+function computeAutoMode(now = new Date()): ThemeMode {
+  const h = now.getHours();
+  return h >= 6 && h < 18 ? "light" : "dark";
+}
+
+function msUntilNextAutoBoundary(now = new Date()): number {
+  const next = new Date(now);
+  const h = next.getHours();
+
+  if (h < 6) {
+    next.setHours(6, 0, 0, 0);
+  } else if (h < 18) {
+    next.setHours(18, 0, 0, 0);
+  } else {
+    next.setDate(next.getDate() + 1);
+    next.setHours(6, 0, 0, 0);
+  }
+
+  const diff = next.getTime() - now.getTime();
+  return Math.max(1000, diff);
+}
+
 type ThemeContextValue = {
   themePref: ThemePref;
   theme: Theme;
@@ -208,10 +230,13 @@ const ThemeContext = createContext<ThemeContextValue | null>(null);
 
 export function ThemeProvider({ children }: { children: React.ReactNode }) {
   const scheme = useColorScheme();
-  const systemMode: ThemeMode = scheme === "dark" ? "dark" : "light";
+  const osMode: ThemeMode = scheme === "dark" ? "dark" : "light";
 
   const [themePref, setThemePrefState] = useState<ThemePref>("system");
   const [hydrated, setHydrated] = useState<boolean>(false);
+
+  const [autoMode, setAutoMode] = useState<ThemeMode>(() => computeAutoMode());
+  const autoTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const reloadThemePref = useCallback(async () => {
     try {
@@ -253,7 +278,45 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
     } catch {}
   }, []);
 
-  const theme = useMemo(() => resolveTheme(themePref, systemMode), [themePref, systemMode]);
+  useEffect(() => {
+    if (themePref !== "system") return;
+
+    const clearTimer = () => {
+      if (autoTimerRef.current != null) {
+        clearTimeout(autoTimerRef.current);
+        autoTimerRef.current = null;
+      }
+    };
+
+    const applyAndSchedule = () => {
+      setAutoMode((prev) => {
+        const next = computeAutoMode();
+        return prev === next ? prev : next;
+      });
+
+      clearTimer();
+      autoTimerRef.current = setTimeout(() => {
+        applyAndSchedule();
+      }, msUntilNextAutoBoundary());
+    };
+
+    applyAndSchedule();
+
+    const onAppState = (state: AppStateStatus) => {
+      if (state === "active") applyAndSchedule();
+    };
+
+    const sub = AppState.addEventListener("change", onAppState);
+
+    return () => {
+      clearTimer();
+      sub.remove();
+    };
+  }, [themePref]);
+
+  const effectiveSystemMode: ThemeMode = themePref === "system" ? autoMode : osMode;
+
+  const theme = useMemo(() => resolveTheme(themePref, effectiveSystemMode), [themePref, effectiveSystemMode]);
 
   useEffect(() => {
     if (Platform.OS !== "android") return;
@@ -268,8 +331,8 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
   }, [theme.mode]);
 
   const value = useMemo<ThemeContextValue>(() => {
-    return { themePref, theme, systemMode, hydrated, setThemePref, reloadThemePref };
-  }, [themePref, theme, systemMode, hydrated, setThemePref, reloadThemePref]);
+    return { themePref, theme, systemMode: effectiveSystemMode, hydrated, setThemePref, reloadThemePref };
+  }, [themePref, theme, effectiveSystemMode, hydrated, setThemePref, reloadThemePref]);
 
   return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>;
 }
