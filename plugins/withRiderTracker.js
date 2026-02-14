@@ -615,8 +615,6 @@ function getJavaTemplates(pkg) {
   const P = pkg;
   const TRACKING_ACTION_START = `${P}.ACTION_TRACKING_START`;
   const TRACKING_ACTION_STOP = `${P}.ACTION_TRACKING_STOP`;
-  const OVERLAY_ACTION_SHOW = `${P}.ACTION_OVERLAY_SHOW`;
-  const OVERLAY_ACTION_HIDE = `${P}.ACTION_OVERLAY_HIDE`;
 
   const TrackerPrefs = `package ${P}.tracker
 
@@ -725,9 +723,6 @@ class TrackingService : Service() {
   companion object {
     const val ACTION_START = "${TRACKING_ACTION_START}"
     const val ACTION_STOP = "${TRACKING_ACTION_STOP}"
-
-    const val ACTION_OVERLAY_SHOW = "${OVERLAY_ACTION_SHOW}"
-    const val ACTION_OVERLAY_HIDE = "${OVERLAY_ACTION_HIDE}"
 
     const val NOTI_CH_ID = "ridernote_tracking_channel"
     const val NOTI_ID = 11021
@@ -1328,17 +1323,8 @@ class TrackingService : Service() {
       return START_NOT_STICKY
     }
 
-    if (ACTION_OVERLAY_SHOW == action) {
-      if (hasSession) showBubble() else hideBubble()
-      return START_NOT_STICKY
-    }
-
-    if (ACTION_OVERLAY_HIDE == action) {
-      hideBubble()
-      return START_NOT_STICKY
-    }
-
     if (ACTION_STOP == action) {
+      startForegroundSafe("정리 중")
       hideBubble()
       stopUpdates()
       stopForeground(true)
@@ -1426,23 +1412,7 @@ class TrackerModule(private val reactContext: ReactApplicationContext) : ReactCo
   private fun stopTrackingService(c: ReactApplicationContext) {
     val ts = Intent(c, TrackingService::class.java)
     ts.action = TrackingService.ACTION_STOP
-    if (Build.VERSION.SDK_INT >= 26) c.startForegroundService(ts) else c.startService(ts)
-  }
-
-  private fun showOverlay(c: ReactApplicationContext) {
-    val ts = Intent(c, TrackingService::class.java)
-    ts.action = TrackingService.ACTION_OVERLAY_SHOW
-    try {
-      if (Build.VERSION.SDK_INT >= 26) c.startForegroundService(ts) else c.startService(ts)
-    } catch (_: Exception) {}
-  }
-
-  private fun hideOverlay(c: ReactApplicationContext) {
-    val ts = Intent(c, TrackingService::class.java)
-    ts.action = TrackingService.ACTION_OVERLAY_HIDE
-    try {
-      if (Build.VERSION.SDK_INT >= 26) c.startForegroundService(ts) else c.startService(ts)
-    } catch (_: Exception) {}
+    c.startService(ts)
   }
 
   @ReactMethod
@@ -1453,7 +1423,6 @@ class TrackerModule(private val reactContext: ReactApplicationContext) : ReactCo
       val existing = TrackerPrefs.sp(c).getString(TrackerPrefs.KEY_ACTIVE_SESSION, null)
       if (existing != null) {
         startTrackingService(c)
-        showOverlay(c)
 
         val out = Arguments.createMap()
         out.putString("sessionId", existing)
@@ -1472,7 +1441,6 @@ class TrackerModule(private val reactContext: ReactApplicationContext) : ReactCo
         .apply()
 
       startTrackingService(c)
-      showOverlay(c)
 
       val out = Arguments.createMap()
       out.putString("sessionId", sessionId)
@@ -1499,7 +1467,6 @@ class TrackerModule(private val reactContext: ReactApplicationContext) : ReactCo
         .remove(TrackerPrefs.KEY_ACTIVE_SESSION)
         .apply()
 
-      hideOverlay(c)
       stopTrackingService(c)
 
       val out = Arguments.createMap()

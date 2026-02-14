@@ -688,6 +688,8 @@ export default function GoogleMap({
             lastUserCoordRef.current = { lat, lng, acc };
             setMyLocOverlayStable(lat, lng, acc);
 
+            if (!followMyLocationRef.current) return;
+
             const now = Date.now();
 
             if (forceSnapRef.current) {
@@ -930,38 +932,75 @@ export default function GoogleMap({
   }, []);
 
   const handlePressMyLocation = useCallback(async () => {
-    userInteractedRef.current = false;
-    setFollowMyLocation(true);
+    userInteractedRef.current = true;
 
+    setFollowMyLocation(true);
+    followMyLocationRef.current = true;
+    forceSnapRef.current = true;
+    resumeFollowOnceRef.current = true;
+
+    const last0 = lastUserCoordRef.current;
+    if (
+      last0 &&
+      isValidLatLng(last0.lat, last0.lng) &&
+      !(Number.isFinite(last0.acc as any) && (last0.acc as number) > 2000)
+    ) {
+      lastFollowCoordRef.current = { lat: last0.lat, lng: last0.lng };
+      lastFollowAnimAtRef.current = Date.now();
+      animateToUser(last0.lat, last0.lng, 1);
+      onCenterChangeRef.current?.({ lat: last0.lat, lng: last0.lng });
+    }
+
+    const pick = (lat: number, lng: number, acc?: number) => {
+      if (!isValidLatLng(lat, lng)) return false;
+      if (Number.isFinite(acc as any) && (acc as number) > 2000) return false;
+
+      lastUserCoordRef.current = { lat, lng, acc };
+      setMyLocOverlayStable(lat, lng, acc);
+      lastFollowCoordRef.current = { lat, lng };
+      lastFollowAnimAtRef.current = Date.now();
+      animateToUser(lat, lng, 1);
+      onCenterChangeRef.current?.({ lat, lng });
+      return true;
+    };
+
+    // (1) 버튼 클릭 시: 현재 GPS 1회성 강제 갱신(타임아웃 포함)
     try {
       const { status } = await Location.requestForegroundPermissionsAsync();
       if (status !== "granted") return;
 
-      const loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High });
-      const lat = Number(loc.coords.latitude);
-      const lng = Number(loc.coords.longitude);
-      const acc = Number(loc.coords.accuracy);
+      const loc = await Promise.race([
+        Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High }),
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error("timeout")), 6500))
+      ]);
 
-      if (isValidLatLng(lat, lng) && (!Number.isFinite(acc) || acc <= 2000)) {
-        lastUserCoordRef.current = { lat, lng, acc };
-        lastFollowCoordRef.current = { lat, lng };
-        lastFollowAnimAtRef.current = Date.now();
-        animateToUser(lat, lng, 450);
-        onCenterChangeRef.current?.({ lat, lng });
-        return;
-      }
+      const lat = Number((loc as any)?.coords?.latitude);
+      const lng = Number((loc as any)?.coords?.longitude);
+      const acc = Number((loc as any)?.coords?.accuracy);
+
+      if (pick(lat, lng, acc)) return;
     } catch {
       // ignore
     }
 
-    const last = lastUserCoordRef.current;
-    if (last && isValidLatLng(last.lat, last.lng)) {
-      lastFollowCoordRef.current = { lat: last.lat, lng: last.lng };
-      lastFollowAnimAtRef.current = Date.now();
-      animateToUser(last.lat, last.lng, 450);
-      onCenterChangeRef.current?.({ lat: last.lat, lng: last.lng });
+    // (2) 실패 시: lastKnown(최소한의 폴백)
+    try {
+      const cached = await Location.getLastKnownPositionAsync();
+      const lat0 = Number(cached?.coords?.latitude);
+      const lng0 = Number(cached?.coords?.longitude);
+      const acc0 = Number(cached?.coords?.accuracy);
+
+      if (pick(lat0, lng0, acc0)) return;
+    } catch {
+      // ignore
     }
-  }, [animateToUser]);
+
+    // (3) 최후 폴백: 마지막으로 저장된 좌표라도 카메라 이동
+    const last = lastUserCoordRef.current;
+    if (last) {
+      pick(last.lat, last.lng, last.acc);
+    }
+  }, [animateToUser, setMyLocOverlayStable]);
 
   const onInitializedStable = useCallback(async () => {
     setMapReady(true);
@@ -1003,8 +1042,9 @@ export default function GoogleMap({
 
   const onTapMapStable = useCallback(() => closeBubble(), [closeBubble]);
 
-  const onCameraChangedStable = useCallback((e: any) => {
-    lastCameraReasonRef.current = (e?.reason as any) ?? null;
+    const onCameraChangedStable = useCallback((e: any) => {
+    const reason = (e?.reason as any) ?? null;
+    lastCameraReasonRef.current = reason;
 
     const z = Number(e?.zoom);
     const b = Number(e?.bearing);
@@ -1014,11 +1054,28 @@ export default function GoogleMap({
     if (Number.isFinite(b)) lastBearingRef.current = b;
     if (Number.isFinite(t)) lastTiltRef.current = t;
 
-    if (e?.reason === "Gesture") {
+    const isNonProgramCameraMove = reason !== "Developer" && reason !== "Location";
+    if (isNonProgramCameraMove) {
       userInteractedRef.current = true;
-      if (followMyLocationRef.current) setFollowMyLocation(false);
+
+      if (followMyLocationRef.current) {
+        followMyLocationRef.current = false;
+        setFollowMyLocation(false);
+      }
+      forceSnapRef.current = false;
+      resumeFollowOnceRef.current = false;
+
+      if (locationWatcherRef.current) {
+        try {
+          locationWatcherRef.current.remove();
+        } catch {
+          // ignore
+        }
+        locationWatcherRef.current = null;
+      }
     }
   }, []);
+
 
   const onCameraIdleStable = useCallback(
     (camera: any) => {

@@ -52,6 +52,7 @@ export default function ProfileScreen({ onClose }: Props) {
   const [contactVisible, setContactVisible] = useState<boolean>(false);
   const [contactText, setContactText] = useState<string>("");
   const [contactSending, setContactSending] = useState<boolean>(false);
+  const [otaUpdatePromptVisible, setOtaUpdatePromptVisible] = useState<boolean>(false);
 
   const appVersion = useMemo(() => {
     const v =
@@ -258,6 +259,20 @@ export default function ProfileScreen({ onClose }: Props) {
     }
   }, []);
 
+  useEffect(() => {
+    let mounted = true;
+    (async () => {
+      try {
+        if (!Updates.isEnabled) return;
+        const res = await Updates.checkForUpdateAsync();
+        if (res.isAvailable && mounted) setOtaUpdatePromptVisible(true);
+      } catch {}
+    })();
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
   const tryAndroidInAppUpdate = useCallback(async (): Promise<boolean> => {
     if (Platform.OS !== "android") return false;
 
@@ -446,6 +461,45 @@ export default function ProfileScreen({ onClose }: Props) {
           </View>
         </View>
       ) : null}
+
+      <Modal transparent visible={otaUpdatePromptVisible} animationType="fade" onRequestClose={() => setOtaUpdatePromptVisible(false)}>
+        <View style={styles.modalRoot}>
+          <View style={styles.modalOverlay} />
+
+          <View style={[styles.modalCard, { marginBottom: insets.bottom + 14 }]}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>업데이트가 있어요</Text>
+
+              <TouchableOpacity activeOpacity={0.88} onPress={() => setOtaUpdatePromptVisible(false)} style={styles.modalCloseBtn}>
+                <Text style={styles.modalCloseTxt}>닫기</Text>
+              </TouchableOpacity>
+            </View>
+
+            <View style={styles.modalMetaBox}>
+              <Text style={styles.modalMetaTxt}>새 버전이 준비되었습니다. 지금 업데이트할까요?</Text>
+            </View>
+
+            <View style={styles.modalBtnRow}>
+              <TouchableOpacity activeOpacity={0.88} onPress={() => setOtaUpdatePromptVisible(false)} style={styles.modalBtnGhost}>
+                <Text style={styles.modalBtnGhostTxt}>나중에</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                activeOpacity={0.88}
+                onPress={async () => {
+                  if (updateBusy) return;
+                  setOtaUpdatePromptVisible(false);
+                  await runEasOtaUpdateIfAvailable();
+                }}
+                style={[styles.modalBtnPrimary, updateBusy ? styles.modalBtnPrimaryDisabled : null]}
+                disabled={updateBusy}
+              >
+                <Text style={styles.modalBtnPrimaryTxt}>{updateBusy ? "확인중..." : "업데이트 확인"}</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
 
       <Modal transparent visible={contactVisible} animationType="fade" onRequestClose={() => setContactVisible(false)}>
         <View style={styles.modalRoot}>

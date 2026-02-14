@@ -1,4 +1,4 @@
-﻿import { DeviceEventEmitter, EmitterSubscription, NativeEventEmitter, NativeModules } from "react-native";
+﻿import { DeviceEventEmitter, EmitterSubscription, NativeEventEmitter, NativeModules, Platform } from "react-native";
 
 export type StartResult = {
   sessionId: string;
@@ -76,11 +76,18 @@ const MODULE_CANDIDATES = ["Tracker", "TrackerModule", "NativeTracker", "RiderTr
 
 type AnyNative = Record<string, any>;
 
+let _cachedModule: AnyNative | null | undefined = undefined;
+
 function resolveNativeModule(): AnyNative | null {
+  if (_cachedModule !== undefined) return _cachedModule;
   for (const name of MODULE_CANDIDATES) {
     const m = (NativeModules as AnyNative)?.[name];
-    if (m) return m as AnyNative;
+    if (m) {
+      _cachedModule = m as AnyNative;
+      return _cachedModule;
+    }
   }
+  _cachedModule = null;
   return null;
 }
 
@@ -123,17 +130,40 @@ async function callNative<T>(candidates: string[], usageLabel: string, ...args: 
   return (await Promise.resolve(out)) as T;
 }
 
+let _cachedEmitter:
+  | {
+      addListener: (eventName: string, handler: (...args: any[]) => void) => EmitterSubscription;
+    }
+  | null = null;
+
 function getEmitter(): {
   addListener: (eventName: string, handler: (...args: any[]) => void) => EmitterSubscription;
 } {
+  if (_cachedEmitter) return _cachedEmitter;
+
   const M = resolveNativeModule();
+
+  // NativeEventEmitter는 모듈(특히 iOS에서 addListener/removeListeners를 가진 모듈)이 필요할 수 있어
+  // 안전하게 try/catch + fallback 구성
   if (M) {
     try {
-      const emitter = new NativeEventEmitter();
-      return { addListener: (eventName, handler) => emitter.addListener(eventName, handler) };
+      // iOS는 NativeEventEmitter(모듈) 권장, Android는 DeviceEventEmitter가 흔히 사용됨
+      if (Platform.OS === "ios") {
+        const emitter = new NativeEventEmitter(M as any);
+        _cachedEmitter = { addListener: (eventName, handler) => emitter.addListener(eventName, handler) };
+        return _cachedEmitter;
+      }
+      // Android에서도 동작 가능하면 사용, 실패하면 fallback
+      try {
+        const emitter = new NativeEventEmitter(M as any);
+        _cachedEmitter = { addListener: (eventName, handler) => emitter.addListener(eventName, handler) };
+        return _cachedEmitter;
+      } catch {}
     } catch {}
   }
-  return { addListener: (eventName, handler) => DeviceEventEmitter.addListener(eventName, handler) };
+
+  _cachedEmitter = { addListener: (eventName, handler) => DeviceEventEmitter.addListener(eventName, handler) };
+  return _cachedEmitter;
 }
 
 const Tracker = {

@@ -12,6 +12,7 @@ module.exports = ({ config }) => {
   return {
     expo: {
       ...expo,
+      owner: "son_sunghyun",
       android: {
         ...(expo.android || {}),
         package: pkg,
@@ -20,4 +21,3 @@ module.exports = ({ config }) => {
     },
   };
 };
-

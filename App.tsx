@@ -1,4 +1,4 @@
-﻿// FILE: C:\RiderNote\App.tsx
+﻿﻿// FILE: C:\RiderNote\App.tsx
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import {
@@ -74,20 +74,6 @@ type MapViewState = {
   zoom?: number;
   latDelta?: number;
   lngDelta?: number;
-};
-
-type SessionSnapshot = {
-  sessionId: string | null;
-  startedAt: number | null;
-  endedAt: number;
-  memos: MemoItem[];
-  route: RoutePoint[];
-};
-
-type SessionSlots = {
-  slot1: SessionSnapshot | null; // 최신
-  slot2: SessionSnapshot | null; // 직전
-  slot3: SessionSnapshot | null; // 그 전
 };
 
 function fmtTime(ms?: number) {
@@ -238,7 +224,6 @@ function Main() {
 
   const MAP_VIEW_KEY = "map_view_state_v1";
 
-  const SESSION_SLOTS_KEY = "session_slots_v1";
   const MEMO_DELETED_KEY = "memo_deleted_savedat_v1";
   const MEMO_TEXT_OVERRIDES_KEY = "memo_text_overrides_v1";
 
@@ -269,95 +254,42 @@ function Main() {
 
   const [isPremium, setIsPremium] = useState<boolean>(false);
   const [isTrial, setIsTrial] = useState<boolean>(false);
-
   const [memos, setMemos] = useState<MemoItem[]>([]);
   const [route, setRoute] = useState<RoutePoint[]>([]);
   const routeRef = useRef<RoutePoint[]>(route);
   const routeWatchIdRef = useRef<any>(null);
-  const routePullRef = useRef<any>(null);
-  const [homeSlot1, setHomeSlot1] = useState<SessionSnapshot | null>(null);
+  const routePullRef = useRef<any>(null);  
   const [manual, setManual] = useState<ManualLocationState>({ enabled: false, lat: 0, lng: 0, acc: 0 });
-
   const [historyVisible, setHistoryVisible] = useState<boolean>(false);
   const [profileVisible, setProfileVisible] = useState<boolean>(false);
   const [permGateVisible, setPermGateVisible] = useState<boolean>(false);
   const [perm, setPerm] = useState<PermState>({ locationFg: false, locationBg: false, overlay: false, notifications: false });
   const [popup, setPopup] = useState<PopupState>({ visible: false, title: "", message: "", buttons: [] });
-
   const [mapView, setMapView] = useState<MapViewState>({ zoom: 17 });
-
   const centerRef = useRef<Center>(center);
   const memoSigRef = useRef<string>("");
   const routeSigRef = useRef<string>("");
   const autoCenteredRef = useRef<boolean>(false);
   const deletedMemoRef = useRef<Set<number>>(new Set());
   const memoTextOverridesRef = useRef<Record<string, string>>({});
-
   const mapViewLoadedRef = useRef<boolean>(false);
   const mapViewSaveRef = useRef<any>(null);
   const mapViewRef = useRef<MapViewState>(mapView);
-
   const lastClipRef = useRef<string>("");
   const clipPollRef = useRef<any>(null);
-
-  // ✅ 세션 시작/종료 시간(스냅샷 route 필터용)
   const sessionStartedAtRef = useRef<number | null>(null);
-
   const sessionLimitAtRef = useRef<number | null>(null);
   const extendModalLockRef = useRef<boolean>(false);
   const pendingInterstitialActionRef = useRef<null | "start" | "history">(null);
-  const pendingInterstitialShowOnlyRef = useRef<boolean>(false);
   const pendingRewardExtendRef = useRef<boolean>(false);
-
   const showAds = !isPremium; // 무료 + 무료체험(TRIAL) = 광고 노출
   const limitSession = !isPremium && !isTrial; // 무료만 2시간 제한
   const bottomBarReserve = bottomPad + 106 + (showAds ? BANNER_H + BANNER_GAP : 0);
-
   const interstitial = useInterstitialAd(ADMOB_INTERSTITIAL_UNIT_ID, { requestNonPersonalizedAdsOnly: true });
   const rewardedInterstitial = useRewardedInterstitialAd(ADMOB_REWARDED_INTERSTITIAL_UNIT_ID, { requestNonPersonalizedAdsOnly: true });
 
-  const readSessionSlots = useCallback(async (): Promise<SessionSlots> => {
-    try {
-      const s = await AsyncStorage.getItem(SESSION_SLOTS_KEY);
-      if (!s) return { slot1: null, slot2: null, slot3: null };
-      const v = JSON.parse(s);
-      return {
-        slot1: v?.slot1 ?? null,
-        slot2: v?.slot2 ?? null,
-        slot3: v?.slot3 ?? null
-      };
-    } catch {
-      return { slot1: null, slot2: null, slot3: null };
-    }
-  }, []);
-
-  const writeSessionSlots = useCallback(async (slots: SessionSlots) => {
-    try {
-      await AsyncStorage.setItem(SESSION_SLOTS_KEY, JSON.stringify(slots));
-    } catch {}
-  }, []);
-
-  const pushSessionSnapshot = useCallback(
-    async (snap: SessionSnapshot) => {
-      try {
-        const prev = await readSessionSlots();
-        const next: SessionSlots = {
-          slot1: snap,
-          slot2: prev.slot1 ?? null,
-          slot3: prev.slot2 ?? null
-        };
-        await writeSessionSlots(next);
-      } catch {}
-    },
-    [readSessionSlots, writeSessionSlots]
-  );
-
   useEffect(() => {
     (async () => {
-      try {
-        const slots = await readSessionSlots();
-        setHomeSlot1(slots.slot1);
-      } catch {}
       try {
         const s = await AsyncStorage.getItem(MEMO_DELETED_KEY);
         const arr = s ? JSON.parse(s) : [];
@@ -376,7 +308,7 @@ function Main() {
         if (v && typeof v === "object") memoTextOverridesRef.current = v;
       } catch {}
     })();
-  }, [readSessionSlots]);
+  }, []);
 
   useEffect(() => {
     centerRef.current = center;
@@ -793,10 +725,18 @@ function Main() {
 
   const refreshManual = useCallback(async () => {
     try {
-      const s = await Tracker.getManualLocation();
-      setManual(s);
-      if (s?.enabled && typeof s.lat === "number" && typeof s.lng === "number") {
-        setCenterStable(s.lat, s.lng, true);
+      const s: any = await Tracker.getManualLocation();
+
+      const next: ManualLocationState = {
+        enabled: !!s?.enabled,
+        lat: typeof s?.lat === "number" ? s.lat : 0,
+        lng: typeof s?.lng === "number" ? s.lng : 0,
+        acc: typeof s?.acc === "number" ? s.acc : 0
+      };
+
+      setManual(next);
+      if (next.enabled && typeof next.lat === "number" && typeof next.lng === "number") {
+        setCenterStable(next.lat, next.lng, true);
       }
     } catch {
       setManual({ enabled: false, lat: 0, lng: 0, acc: 0 });
@@ -806,14 +746,12 @@ function Main() {
     const refreshAll = useCallback(
     async (withError = false) => {
       try {
-        await refreshMemosSilent();
-        await refreshRouteSilent();
         await refreshManual();
       } catch (e: any) {
         if (withError) openPopup("데이터 로드 실패 🥲", String(e?.message ?? e));
       }
     },
-    [refreshManual, refreshMemosSilent, refreshRouteSilent, openPopup]
+    [refreshManual, openPopup]
   );
 
   useEffect(() => {
@@ -828,10 +766,6 @@ function Main() {
       if (historyVisible) {
         setHistoryVisible(false);
         (async () => {
-          try {
-            const slots = await readSessionSlots();
-            setHomeSlot1(slots.slot1);
-          } catch {}
           await refreshAll();
         })();
         return true;
@@ -859,7 +793,7 @@ function Main() {
 
     const sub = BackHandler.addEventListener("hardwareBackPress", onBackPress);
     return () => sub.remove();
-  }, [closePopup, historyVisible, openPopup, popup.visible, profileVisible, readSessionSlots, refreshAll, isTracking, onStop]);
+  }, [closePopup, historyVisible, openPopup, popup.visible, profileVisible, refreshAll, isTracking, onStop]);
 
   const handleDeleteMemoPin = useCallback(
     async (pin: MemoPin) => {
@@ -874,31 +808,12 @@ function Main() {
           await AsyncStorage.setItem(MEMO_DELETED_KEY, JSON.stringify(Array.from(nextSet)));
         } catch {}
 
-        try {
-          const slots = await readSessionSlots();
-          const prune = (s: SessionSnapshot | null) => {
-            if (!s) return s;
-            const prev = s.memos || [];
-            const next = prev.filter((m: any) => Number((m as any)?.savedAt || 0) !== t);
-            return next.length === prev.length ? s : { ...s, memos: next };
-          };
-
-          const nextSlots: SessionSlots = {
-            slot1: prune(slots.slot1),
-            slot2: prune(slots.slot2),
-            slot3: prune(slots.slot3)
-          };
-
-          await writeSessionSlots(nextSlots);
-          setHomeSlot1(nextSlots.slot1);
-        } catch {}
-
         setMemos(prev => prev.filter((m: any) => Number((m as any)?.savedAt || 0) !== t));
       } catch (e: any) {
         openPopup("삭제 실패", String(e?.message ?? e));
       }
     },
-    [openPopup, readSessionSlots, writeSessionSlots]
+    [openPopup]
   );
 
   const handleUpdateMemoPin = useCallback(
@@ -946,37 +861,11 @@ function Main() {
           })
         );
 
-        try {
-          const slots = await readSessionSlots();
-          const patch = (s: SessionSnapshot | null) => {
-            if (!s) return s;
-            const prev = s.memos || [];
-            let changed = false;
-            const next = prev.map((m: any) => {
-              const mt = numOrNull((m as any)?.savedAt);
-              if (mt !== null && mt === t) {
-                changed = true;
-                return { ...(m as any), text: nextText };
-              }
-              return m;
-            });
-            return changed ? { ...s, memos: next } : s;
-          };
-
-          const nextSlots: SessionSlots = {
-            slot1: patch(slots.slot1),
-            slot2: patch(slots.slot2),
-            slot3: patch(slots.slot3)
-          };
-
-          await writeSessionSlots(nextSlots);
-          setHomeSlot1(nextSlots.slot1);
-        } catch {}
       } catch (e: any) {
         openPopup("수정 실패", String(e?.message ?? e));
       }
     },
-    [openPopup, readSessionSlots, writeSessionSlots]
+    [openPopup]
   );
 
   useEffect(() => {
@@ -1063,18 +952,6 @@ function Main() {
 
   useEffect(() => {
     if (!showAds) return;
-    if (!pendingInterstitialShowOnlyRef.current) return;
-    if (!interstitial.isLoaded) return;
-
-    pendingInterstitialShowOnlyRef.current = false;
-
-    try {
-      interstitial.show();
-    } catch {}
-  }, [showAds, interstitial.isLoaded]);
-
-  useEffect(() => {
-    if (!showAds) return;
     if (interstitial.isClosed) {
       try {
         interstitial.load();
@@ -1092,7 +969,9 @@ function Main() {
 
       if (act === "history") {
         (async () => {
-          await refreshAll(true);
+          await refreshMemosSilent();
+          await refreshRouteSilent();
+          await refreshManual();
           setHistoryVisible(true);
         })();
       }
@@ -1204,11 +1083,9 @@ function Main() {
         !p.overlay;
       if (need) setPermGateVisible(true);
       await refreshAll();
-      const slots = await readSessionSlots();
-      setHomeSlot1(slots.slot1 ?? null);
       if (p.locationFg) await autoCenterOnce();
     })();
-  }, [checkPermissions, refreshAll, autoCenterOnce, readSessionSlots]);
+  }, [checkPermissions, refreshAll, autoCenterOnce]);
 
   useEffect(() => {
     const sub = AppState.addEventListener("change", async next => {
@@ -1226,13 +1103,11 @@ function Main() {
           p.overlay;
         setPermGateVisible(!allOk);
         await refreshAll();
-        const slots = await readSessionSlots();
-        setHomeSlot1(slots.slot1 ?? null);
         if (p.locationFg) await autoCenterOnce();
       }
     });
-    return () => sub.remove();
-  }, [checkPermissions, refreshAll, autoCenterOnce, reloadThemePref, readSessionSlots]);
+    return () => (sub as any)?.remove?.();
+  }, [checkPermissions, refreshAll, autoCenterOnce, reloadThemePref]);
 
   useEffect(() => {
     const start = async () => {
@@ -1259,7 +1134,7 @@ function Main() {
     }
 
     return () => {
-      sub.remove();
+      (sub as any)?.remove?.();
       stop();
     };
   }, [cacheClipboardNow]);
@@ -1293,21 +1168,6 @@ function Main() {
       } catch {}
     };
   }, [refreshAll, saveFromClipboard]);
-
-  useEffect(() => {
-    try {
-      const sub = Tracker.onNoteSaved(async ev => {
-        await refreshMemosSilent();
-        await refreshRouteSilent();
-        const lat = numOrNull((ev as any)?.lat);
-        const lng = numOrNull((ev as any)?.lng);
-        if (lat !== null && lng !== null && !manual.enabled) setCenterStable(lat, lng);
-      });
-      return () => sub.remove();
-    } catch {
-      return;
-    }
-  }, [manual.enabled, refreshMemosSilent, refreshRouteSilent, setCenterStable]);
 
   useEffect(() => {
     const geo: any = (globalThis as any).navigator?.geolocation;
@@ -1581,45 +1441,6 @@ function Main() {
         allMemos = [];
       }
 
-      try {
-        const sessionMemos = endedSessionId ? allMemos.filter((m: any) => (m as any)?.sessionId === endedSessionId) : [];
-
-        let rawRoute: any[] = [];
-        try {
-          rawRoute = (await Tracker.getRoute()) as any[];
-        } catch {
-          rawRoute = [];
-        }
-
-        let sessionRoute: RoutePoint[] = (rawRoute || [])
-          .filter(p => typeof p?.lat === "number" && typeof p?.lng === "number")
-          .map(p => ({ lat: p.lat, lng: p.lng, t: p.t, acc: p.acc }));
-
-        if (typeof startedAt === "number") {
-          const filtered = sessionRoute.filter((p: any) => {
-            const tt = numOrNull((p as any)?.t);
-            if (tt === null) return false;
-            return tt >= startedAt && tt <= endedAt;
-          });
-          if (filtered.length >= 2) sessionRoute = filtered;
-        }
-
-        if (sessionRoute.length < 2 && route.length >= 2) {
-          sessionRoute = route;
-        }
-
-        const snap: SessionSnapshot = {
-          sessionId: endedSessionId,
-          startedAt: typeof startedAt === "number" ? startedAt : null,
-          endedAt,
-          memos: sessionMemos,
-          route: sessionRoute
-        };
-
-        await pushSessionSnapshot(snap);
-        setHomeSlot1(snap);
-      } catch {}
-
       sessionStartedAtRef.current = null;
 
       const calcKm = (pts: RoutePoint[]) => {
@@ -1676,68 +1497,51 @@ function Main() {
     }
   }
 
-  const homeRoute = useMemo(() => {
-    if (isTracking) return route;
-    const r = homeSlot1?.route;
-    if (Array.isArray(r) && r.length) return r;
-    return route;
-  }, [isTracking, route, homeSlot1]);
-
-  const homeMemos = useMemo(() => {
-    if (isTracking && sessionId) {
-      return memos.filter((m: any) => (m as any)?.sessionId === sessionId);
-    }
-    const sm = homeSlot1?.memos;
-    if (Array.isArray(sm) && sm.length) return sm;
-    return memos;
-  }, [isTracking, sessionId, memos, homeSlot1]);
-
     const displayMemos = useMemo(() => {
-    return isTracking ? memos : homeSlot1?.memos ?? [];
-  }, [isTracking, memos, homeSlot1]);
+    return isTracking ? memos : [];
+  }, [isTracking, memos]);
 
   const displayRoute = useMemo(() => {
-    return isTracking ? route : homeSlot1?.route ?? [];
-  }, [isTracking, route, homeSlot1]);
+    return isTracking ? route : [];
+  }, [isTracking, route]);
 
   const displaySessionId = useMemo(() => {
-    return isTracking ? sessionId : homeSlot1?.sessionId ?? null;
-  }, [isTracking, sessionId, homeSlot1]);
+    return isTracking ? sessionId : null;
+  }, [isTracking, sessionId]);
 
-  const memoPinMeta = useMemo(() => {
-    return (memos || [])
-      .map((m: any, i: number) => {
-        const lat = numOrNull((m as any)?.lat);
-        const lng = numOrNull((m as any)?.lng);
-        if (lat === null || lng === null || !isValidLatLng(lat, lng)) return null;
+const memoPinMeta = useMemo(() => {
+  return (displayMemos || [])
+    .map((m: any) => {
+      const lat = numOrNull((m as any)?.lat);
+      const lng = numOrNull((m as any)?.lng);
+      if (lat === null || lng === null || !isValidLatLng(lat, lng)) return null;
 
-        const savedAt = numOrNull((m as any)?.savedAt);
+      const savedAt = numOrNull((m as any)?.savedAt);
+      if (savedAt === null) return null;
 
-        const id = `${m.sessionId ?? "s"}_${savedAt ?? 0}_${i}`;
-        const fullText = (m.text ?? "").toString();
-        const oneLine = fullText.replace(/\s+/g, " ").trim();
-        const previewText = oneLine.length > 24 ? oneLine.slice(0, 24) + "…" : oneLine;
+      const id = `${m.sessionId ?? "s"}_${savedAt}`;
+      const fullText = (m.text ?? "").toString();
+      const oneLine = fullText.replace(/\s+/g, " ").trim();
+      const previewText = oneLine.length > 24 ? oneLine.slice(0, 24) + "…" : oneLine;
 
-        return {
-          id,
-          lat,
-          lng,
-          text: fullText,
-          previewText,
-          fullText,
-          savedAt: savedAt ?? undefined,
-          sessionId: m.sessionId
-        };
-      })
-      .filter((x: any) => !!x);
-  }, [memos]);
+      return {
+        id,
+        lat,
+        lng,
+        text: fullText,
+        previewText,
+        fullText,
+        savedAt,
+        sessionId: m.sessionId
+      };
+    })
+    .filter((x: any) => !!x);
+}, [displayMemos]);
+
 
 
   const memoPins = useMemo(() => memoPinMeta as unknown as MemoPin[], [memoPinMeta]);
 
-  const memoSummary = useMemo(() => {
-    return `총 메모 ${memos.length}개`;
-  }, [memos.length]);
 
   const fitSessionKey = useMemo(() => {
     if (!displaySessionId) return undefined;
@@ -1780,10 +1584,6 @@ function Main() {
             onClose={() => {
               setHistoryVisible(false);
               (async () => {
-                try {
-                  const slots = await readSessionSlots();
-                  setHomeSlot1(slots.slot1);
-                } catch {}
                 await refreshAll();
               })();
             }}
@@ -1807,10 +1607,7 @@ function Main() {
                 {statusLabel}
               </Text>
 
-              <View style={styles.headerRightRow}>
-                <Text style={styles.memoCountText} numberOfLines={1} ellipsizeMode="tail">
-                  {memoSummary}
-                </Text>
+              <View style={styles.headerRightRow}>                
 
                 <TouchableOpacity
                   activeOpacity={0.88}
@@ -1820,17 +1617,20 @@ function Main() {
                       try {
                         interstitial.show();
                         return;
-                      } catch {}
+                      } catch {
+                        pendingInterstitialActionRef.current = null;
+                      }
                     }
 
                     if (showAds && !interstitial.isLoaded) {
-                      pendingInterstitialShowOnlyRef.current = true;
                       try {
                         interstitial.load();
                       } catch {}
                     }
 
-                    await refreshAll(true);
+                    await refreshMemosSilent();
+                    await refreshRouteSilent();
+                    await refreshManual();
                     setHistoryVisible(true);
                   }}
                   style={styles.headerMemoBtn}
@@ -1874,11 +1674,12 @@ function Main() {
                     try {
                       interstitial.show();
                       return;
-                    } catch {}
+                    } catch {
+                      pendingInterstitialActionRef.current = null;
+                    }
                   }
 
                   if (showAds && !interstitial.isLoaded) {
-                    pendingInterstitialShowOnlyRef.current = true;
                     try {
                       interstitial.load();
                     } catch {}

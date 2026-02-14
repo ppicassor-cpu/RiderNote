@@ -1,12 +1,14 @@
 // FILE: C:\RiderNote\src\screens\MemoHistoryScreen.tsx
 import React, { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { BackHandler, Platform, StatusBar, StyleSheet, Text, TouchableOpacity, View, FlatList } from "react-native";
+import Clipboard from "@react-native-clipboard/clipboard";
+import { StatusBar, StyleSheet, Text, TouchableOpacity, View, FlatList } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { NaverMapView, NaverMapMarkerOverlay, NaverMapPolylineOverlay } from "@mj-studio/react-native-naver-map";
 import type { RoutePoint } from "../components/GoogleMap";
-import type { MemoItem } from "../native/NativeTracker";
+import Tracker, { type MemoItem } from "../native/NativeTracker";
 import { useAppTheme } from "../theme/ThemeProvider";
+import { Animated } from "react-native";
 
 type Props = {
   memos: MemoItem[];
@@ -293,11 +295,12 @@ export default function MemoHistoryScreen({ memos, route, sessionId, onClose }: 
     };
   }, [theme]);
 
-  const styles = useMemo(() => createStyles(palette), [palette]);
+  const styles = useMemo(() => createStyles(palette, insets), [palette, insets]);
   const barStyle = palette.isDark ? "light-content" : "dark-content";
 
   const mapRef = useRef<any>(null);
   const listRef = useRef<FlatList<ListItem> | null>(null);
+  const skipOuterPressRef = useRef<boolean>(false);
 
   const MapViewAny = NaverMapView as any;
   const MarkerAny = NaverMapMarkerOverlay as any;
@@ -338,6 +341,8 @@ export default function MemoHistoryScreen({ memos, route, sessionId, onClose }: 
 
   const [manageVisible, setManageVisible] = useState(false);
   const [popup, setPopup] = useState<PopupState>({ visible: false, title: "", message: "", buttons: [] });
+  const [toastVisible, setToastVisible] = useState(false);
+  const toastOpacity = useRef(new Animated.Value(0)).current;
 
   const hasAnySlots = useMemo(() => {
     return Boolean(slot1 || slot2 || slot3);
@@ -349,16 +354,40 @@ export default function MemoHistoryScreen({ memos, route, sessionId, onClose }: 
     setPopup({ visible: true, title, message, buttons: btns });
   }, [closePopup]);
 
-  useEffect(() => {
-    if (Platform.OS !== "android") return;
+  const writeClipboardWithFallback = useCallback(async (textRaw: any): Promise<boolean> => {
+    const text = String(textRaw ?? "");
 
-    const sub = BackHandler.addEventListener("hardwareBackPress", () => {
-      onClose();
-      return true;
-    });
+    // 1) 1차: react-native-clipboard/clipboard
+    try {
+      await Clipboard.setString(text);
+      const now = await Clipboard.getString();
+      if (now === text) return true;
+    } catch {}
 
-    return () => sub.remove();
-  }, [onClose]);
+    // 2) 2차: Tracker(네이티브/폴백)로 재시도
+    const fns = [
+      (Tracker as any).setClipboardText,
+      (Tracker as any).setClipboard,
+      (Tracker as any).copyToClipboard,
+      (Tracker as any).copyTextToClipboard,
+      (Tracker as any).writeClipboardText
+    ];
+
+    for (const fn of fns) {
+      if (typeof fn !== "function") continue;
+      try {
+        fn(text);
+      } catch {}
+    }
+
+    // ✅ 재시도 후 1회 확인
+    try {
+      const now = await Clipboard.getString();
+      return now === text;
+    } catch {
+      return false;
+    }
+  }, []);
 
   const persistSlots = useCallback(
     async (s1: SlotData | null, s2: SlotData | null, s3: SlotData | null) => {
@@ -925,12 +954,46 @@ export default function MemoHistoryScreen({ memos, route, sessionId, onClose }: 
               const selected = item.id === selectedId;
               const preview = (item.text ?? "").replace(/\s+/g, " ").trim();
               return (
-                <TouchableOpacity activeOpacity={0.9} onPress={() => onListPress(item)} style={[styles.card, selected ? styles.cardSelected : null]}>
-                  <Text style={styles.time}>{fmtTime(item.savedAt)}</Text>
-                  <Text style={styles.text} numberOfLines={2} ellipsizeMode="tail">
-                    {preview || "(텍스트 없음)"}
-                  </Text>
-                </TouchableOpacity>
+                <View style={[styles.card, selected ? styles.cardSelected : null]}>
+                  <View style={styles.cardRow}>
+                    <TouchableOpacity
+                      activeOpacity={0.9}
+                      onPress={() => {
+                        onListPress(item);
+                      }}
+                      style={styles.cardLeft}
+                    >
+                      <Text style={styles.time}>{fmtTime(item.savedAt)}</Text>
+                      <Text style={styles.text} numberOfLines={2} ellipsizeMode="tail">
+                        {preview || "(텍스트 없음)"}
+                      </Text>
+                    </TouchableOpacity>
+
+                    <TouchableOpacity
+                      activeOpacity={0.88}
+                      onPressIn={() => {
+                        skipOuterPressRef.current = true;
+                      }}
+                      onPress={async () => {
+                        const textToCopy = (item.text ?? "").toString();
+                        const ok = await writeClipboardWithFallback(textToCopy);
+                        if (!ok) {
+                          openPopup("복사 실패", "클립보드에 복사하지 못했습니다.");
+                        } else {
+                          setToastVisible(true);
+                          Animated.timing(toastOpacity, { toValue: 1, duration: 200, useNativeDriver: true }).start(() => {
+                            setTimeout(() => {
+                              Animated.timing(toastOpacity, { toValue: 0, duration: 200, useNativeDriver: true }).start(() => setToastVisible(false));
+                            }, 1200);
+                          });
+                        }
+                      }}
+                      style={styles.copyBtn}
+                    >
+                      <Text style={styles.copyBtnText}>📑</Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
               );
             }}
           />
@@ -939,12 +1002,17 @@ export default function MemoHistoryScreen({ memos, route, sessionId, onClose }: 
 
       {manageVisible ? <ManageSheet onClose={() => setManageVisible(false)} /> : null}
       <AlertPopup state={popup} onClose={closePopup} styles={styles} bottomInset={insets.bottom} />
+      {toastVisible ? (
+        <Animated.View style={[styles.toastBox, { opacity: toastOpacity }]}>
+          <Text style={styles.toastText}>복사되었습니다</Text>
+        </Animated.View>
+      ) : null}
 
     </View>
   );
 }
 
-function createStyles(p: ThemePalette) {
+function createStyles(p: ThemePalette, insets: { bottom: number }) {
   const dim = p.isDark ? "rgba(0,0,0,0.72)" : "rgba(0,0,0,0.50)";
   const dangerText = p.isDark ? "rgba(255,110,110,0.95)" : "rgba(230,46,60,0.95)";
 
@@ -1054,6 +1122,19 @@ function createStyles(p: ThemePalette) {
       borderWidth: 2,
       borderColor: p.cardSelectedBorder
     },
+    cardRow: { flex: 1, flexDirection: "row", alignItems: "center", gap: 10 },
+    cardLeft: { flex: 1 },
+    copyBtn: {
+      width: 40,
+      height: 40,
+      borderRadius: 14,
+      alignItems: "center",
+      justifyContent: "center",
+      backgroundColor: p.closeBtnBg,
+      borderWidth: 1,
+      borderColor: p.border
+    },
+    copyBtnText: { fontSize: 18 },
     time: { color: p.text, fontSize: 12, fontWeight: "700" },
     text: { marginTop: 6, color: p.subText, fontSize: 12, lineHeight: 18 },
 
@@ -1119,7 +1200,26 @@ function createStyles(p: ThemePalette) {
     popupBtnText: { fontSize: 13, fontWeight: "700" },
     popupBtnTextPrimary: { color: p.text },
     popupBtnTextSecondary: { color: p.subText },
-    popupBtnTextDisabled: { color: p.muted }
+    popupBtnTextDisabled: { color: p.muted },
+    toastBox: {
+      position: "absolute",
+      bottom: insets.bottom + 80,
+      left: 0,
+      right: 0,
+      alignItems: "center",
+      justifyContent: "center"
+    },
+    toastText: {
+      color: p.text,
+      fontSize: 12,
+      fontWeight: "700",
+      backgroundColor: p.surfaceBg,
+      paddingHorizontal: 16,
+      paddingVertical: 8,
+      borderRadius: 16,
+      borderWidth: 1,
+      borderColor: p.border
+    }
   });
 }
 

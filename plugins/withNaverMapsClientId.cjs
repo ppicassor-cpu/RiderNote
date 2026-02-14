@@ -9,7 +9,7 @@ module.exports = function withNaverMapsClientId(config) {
     const metaData = app["meta-data"];
 
     const NAME = "com.naver.maps.map.CLIENT_ID";
-    const VALUE = "1azmdmnk1m"; // ✅ 하드코딩(요청하신 값)
+    const VALUE = "1azmdmnk1m"; 
 
     // 기존 동일 key 제거 (중복 방지)
     for (let i = metaData.length - 1; i >= 0; i--) {

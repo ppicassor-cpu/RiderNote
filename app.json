@@ -1,9 +1,9 @@
-﻿{
+{
   "expo": {
     "name": "RiderNote",
     "slug": "ridernote",
     "scheme": "ridernote",
-    "version": "1.0.0",
+    "version": "19.0.0",
     "platforms": [
       "android"
     ],
@@ -15,7 +15,7 @@
     },
     "android": {
       "package": "com.ridernote",
-      "versionCode": 19, 
+      "versionCode": 19,
       "permissions": [
         "com.google.android.gms.permission.AD_ID"
       ],
@@ -33,7 +33,7 @@
       "./plugins/withEdgeToEdgeOff",
       "./plugins/withRiderTracker",
       "./plugins/withProguardRelease.cjs",
-      "./plugins/withProguardRulesCopy",      
+      "./plugins/withProguardRulesCopy",
       "./withAndroidSigning.js",
       "./plugins/withNaverMapsClientId.cjs",
       [
@@ -72,8 +72,8 @@
       "fallbackToCacheTimeout": 0,
       "url": "https://u.expo.dev/db131583-e799-4791-aaba-95974d89f15d",
       "requestHeaders": {
-    "expo-channel-name": "production"
-  }
+        "expo-channel-name": "production"
+      }
     },
     "runtimeVersion": "1.0.0",
     "extra": {

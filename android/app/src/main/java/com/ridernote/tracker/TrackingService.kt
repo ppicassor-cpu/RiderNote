@@ -44,9 +44,6 @@ class TrackingService : Service() {
     const val ACTION_START = "com.ridernote.ACTION_TRACKING_START"
     const val ACTION_STOP = "com.ridernote.ACTION_TRACKING_STOP"
 
-    const val ACTION_OVERLAY_SHOW = "com.ridernote.ACTION_OVERLAY_SHOW"
-    const val ACTION_OVERLAY_HIDE = "com.ridernote.ACTION_OVERLAY_HIDE"
-
     const val NOTI_CH_ID = "ridernote_tracking_channel"
     const val NOTI_ID = 11021
 
@@ -646,17 +643,8 @@ class TrackingService : Service() {
       return START_NOT_STICKY
     }
 
-    if (ACTION_OVERLAY_SHOW == action) {
-      if (hasSession) showBubble() else hideBubble()
-      return START_NOT_STICKY
-    }
-
-    if (ACTION_OVERLAY_HIDE == action) {
-      hideBubble()
-      return START_NOT_STICKY
-    }
-
     if (ACTION_STOP == action) {
+      startForegroundSafe("정리 중")
       hideBubble()
       stopUpdates()
       stopForeground(true)
